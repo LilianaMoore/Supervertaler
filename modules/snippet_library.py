@@ -78,15 +78,19 @@ class SnippetLibrary:
                 meta, body = _split_front_matter(raw)
                 rel = md.relative_to(self.library_dir)
                 parts = list(rel.parts)
-                # Folder(s) above the file form the category.
-                # For now we only use the top-level folder for tree grouping;
-                # deeper nesting can be wired up later without changing the file format.
+                # The top-level folder is the category; any folders BETWEEN
+                # the category and the file (v1.10.350) are recorded so the
+                # Clipboard Manager's Menu tree can render them as nested
+                # sub-nodes. Users organise snippets simply by creating
+                # subfolders on disk – same convention as the prompt library.
                 category = parts[0] if len(parts) > 1 else ""
+                subfolders = tuple(parts[1:-1])
                 label = meta.get('name') or md.stem
                 self.snippets.append({
                     'label': label,
                     'body': body.rstrip("\n"),
                     'category': category,
+                    'subfolders': subfolders,
                     'path': md,
                 })
             except Exception as e:

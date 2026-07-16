@@ -2,7 +2,34 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.348 (July 16, 2026)
+**Current Version:** v1.10.351 (July 16, 2026)
+
+
+## v1.10.351 – July 16, 2026
+
+### Added (Clipboard manager: image preview while arrow-keying through the Images column)
+
+- **Pausing on an image now pops up a decent-sized preview.** Navigate the Images column with ↑/↓ (or arrive with →) and rest on an item for ~⅓ second: a preview scaled to up to ~40 % of the screen's width appears to the left of the column, so near-identical screenshots can finally be told apart without pasting them. Move on and the preview follows with the same settle delay; it never takes focus, so keyboard navigation is uninterrupted.
+- The preview disappears the moment it's irrelevant: navigating away, leaving the Images column (← or Tab), pasting a clip, pressing Esc to dismiss the manager, or switching tabs/windows.
+
+
+## v1.10.350 – July 16, 2026
+
+### Added (Clipboard manager: snippet subfolders – organise by simply creating folders on disk)
+
+- **Subfolders inside snippet categories now render as nested sub-nodes in the Menu column**, to any depth. Create a folder like `snippet_library/Personal Snippets/Trados/` on disk (or anywhere deeper), drop `.md` snippet files in it, hit Refresh – it appears as a collapsible folder node, same convention the Prompts section already used. A new top-level folder still becomes a new category, as before.
+- **Empty folders show up too.** Previously a folder only became visible once it contained a snippet file, so "create folder → Refresh → nothing" looked broken. Folders are now enumerated from disk directly, so a freshly created empty subfolder (or empty new category) appears immediately.
+- **Right-click works inside subfolders**: "➕ New snippet in "Personal Snippets/Trados"…" targets the exact subfolder you clicked, and Edit/Delete work on nested snippets like any other. Clip → "Save to Personal Snippets…" continues to save to the category root.
+
+
+## v1.10.349 – July 16, 2026
+
+### Added (Clipboard manager: manage snippets by right-click – no more hand-editing .md files)
+
+- **Right-click any text clip → "📇 Save to Personal Snippets…" / "✨ Save to Special Characters…"**. Opens a small dialog with the label pre-filled from the clip (editable) and the clip text as the body – one click plus Save, and the clip is a permanent entry in the Menu column. Previously this required creating an `.md` file by hand under `snippet_library/` and pressing Refresh.
+- **Right-click in the Menu column to manage snippets in place**: snippet entries get **✏ Edit snippet…** (label and/or text; renaming the label renames the file) and **🗑 Delete snippet** (with confirmation); category headers – and empty space – get **➕ New snippet…**; and **📂 Open snippets folder** is always available as the power-user escape hatch. The tree refreshes immediately after every change.
+- The on-disk format is unchanged (one `.md` file per snippet, filename = label, body = inserted text, top-level folder = category), so existing snippets, user-created category folders, and external edits keep working exactly as before. Editing a legacy front-matter snippet (`name:` override) normalises it to the current filename-is-the-label format.
+- Text Conversions and Prompts are intentionally not editable from this menu – they have their own file formats and workflows.
 
 
 ## v1.10.348 – July 16, 2026

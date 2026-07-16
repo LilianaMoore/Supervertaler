@@ -18,12 +18,13 @@ import hashlib
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QEvent, QSize, QBuffer, QIODevice
+from PyQt6.QtCore import Qt, QEvent, QSize, QBuffer, QIODevice, QTimer
 from PyQt6.QtGui import QColor, QPixmap, QImage, QIcon, QBrush, QFont
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QListView, QAbstractItemView, QApplication,
     QSplitter, QStackedLayout, QMenu, QTreeWidget, QTreeWidgetItem,
+    QDialog, QDialogButtonBox, QLineEdit, QPlainTextEdit, QMessageBox,
 )
 
 from modules.styled_widgets import HelpButton
@@ -40,6 +41,70 @@ _ROLE_KIND     = Qt.ItemDataRole.UserRole + 1      # 'text' or 'image'
 _ROLE_TEXT     = Qt.ItemDataRole.UserRole + 2      # full text (text clips only)
 _ROLE_IMG      = Qt.ItemDataRole.UserRole + 3      # PNG bytes (image clips only)
 _ROLE_PASTED   = Qt.ItemDataRole.UserRole + 4      # bool
+
+# Action-tree (3rd column) items: identifies snippet nodes for the tree's
+# right-click menu. UserRole itself already carries the callback index /
+# category sentinel there, so this rides on UserRole + 1.
+# Value: ('category', <category name>, '') on snippet category rows, or
+#        ('snippet', <category name>, <str path to .md file>) on leaves.
+_ROLE_TREE_SNIPPET = Qt.ItemDataRole.UserRole + 1
+
+
+class SnippetEditDialog(QDialog):
+    """Small label + body editor used by the Clipboard Manager's
+    right-click "save as snippet" / "new snippet" / "edit snippet"
+    actions (v1.10.349). The label becomes the .md filename (and thus
+    the entry shown in the Menu column); the body is the exact text
+    the snippet inserts."""
+
+    def __init__(self, parent=None, *, title: str,
+                 label_text: str = "", body_text: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(460, 300)
+        self.result_label = ""
+        self.result_body = ""
+
+        layout = QVBoxLayout(self)
+
+        lbl1 = QLabel("Label (shown in the Menu column, becomes the filename):")
+        layout.addWidget(lbl1)
+        self._label_edit = QLineEdit(label_text)
+        layout.addWidget(self._label_edit)
+
+        lbl2 = QLabel("Text to insert:")
+        layout.addWidget(lbl2)
+        self._body_edit = QPlainTextEdit(body_text)
+        layout.addWidget(self._body_edit, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Land the user in whichever field still needs input.
+        if label_text:
+            self._body_edit.setFocus()
+        else:
+            self._label_edit.setFocus()
+
+    def _on_accept(self):
+        label = self._label_edit.text().strip()
+        body = self._body_edit.toPlainText()
+        if not label:
+            QMessageBox.warning(self, "Missing label",
+                                "Please enter a label for the snippet.")
+            return
+        if not body.strip():
+            QMessageBox.warning(self, "Missing text",
+                                "Please enter the text the snippet should "
+                                "insert.")
+            return
+        self.result_label = label
+        self.result_body = body
+        self.accept()
 
 
 class ClipboardManagerWidget(QWidget):
@@ -207,6 +272,20 @@ class ClipboardManagerWidget(QWidget):
         self._image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._image_list.customContextMenuRequested.connect(
             lambda pos: self._on_context_menu(pos, self._image_list))
+        # v1.10.351: keyboard image preview. While the Images column has
+        # focus, pausing on an item for ~350 ms pops up a decent-sized
+        # preview next to the list (48 px thumbnails are too small to
+        # tell near-identical screenshots apart). The popup is a ToolTip
+        # window – never takes focus, so arrow-key navigation continues
+        # uninterrupted. Any further navigation hides it and re-arms the
+        # pause timer; focus loss / paste / dismissal hide it for good.
+        self._preview_popup = None
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(350)
+        self._preview_timer.timeout.connect(self._show_image_preview)
+        self._image_list.currentItemChanged.connect(
+            self._on_image_current_changed)
         self._image_empty = self._make_empty_label(
             "No images yet –\ncopy any image to start.")
         self._image_header = QLabel("🖼 Images")
@@ -272,9 +351,10 @@ class ClipboardManagerWidget(QWidget):
 
         # Footer hint
         hint = QLabel(
-            "Click to paste  •  Right-click or Delete key to remove  •  "
-            "Pasted items shown in grey  •  ← / → switches columns  •  "
-            "Up / Down navigates within a column")
+            "Click to paste  •  Right-click a clip to delete it or save it "
+            "as a snippet  •  Right-click the Menu column to add / edit "
+            "snippets  •  Pasted items shown in grey  •  ← / → switches "
+            "columns  •  Up / Down navigates within a column")
         hint.setStyleSheet(
             f"color: #999; font-size: {scaled_pt(7):.1f}pt; padding: 2px 4px; border: none;"
         )
@@ -386,7 +466,29 @@ class ClipboardManagerWidget(QWidget):
         if self._text_list.count() > 0:
             self._text_list.setCurrentRow(0)
 
+    def hideEvent(self, event):
+        # Tab switch / Esc dismissal / Workbench hide: the preview is a
+        # top-level ToolTip window, so it would happily outlive us
+        # on-screen unless hidden explicitly.
+        self._hide_image_preview()
+        super().hideEvent(event)
+
     def eventFilter(self, obj, event):
+        # Image-preview lifecycle: entering the Images column arms the
+        # pause timer for the already-current item; leaving it hides
+        # any visible preview. getattr (not a bare attribute read):
+        # this filter is installed on the TEXT list before _image_list
+        # / _preview_timer exist during _init_ui, and construction-time
+        # events (ParentChange etc.) arrive in that window – an
+        # AttributeError inside an event-filter override is fatal in
+        # PyQt6 (qFatal), it doesn't surface as a Python traceback.
+        img_list = getattr(self, '_image_list', None)
+        if img_list is not None and obj is img_list \
+                and getattr(self, '_preview_timer', None) is not None:
+            if event.type() == QEvent.Type.FocusIn:
+                self._preview_timer.start()
+            elif event.type() == QEvent.Type.FocusOut:
+                self._hide_image_preview()
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(obj, event)
         if obj is self._text_list:
@@ -549,6 +651,11 @@ class ClipboardManagerWidget(QWidget):
             self._COL_HEADER_ACTIVE if active_action else self._COL_HEADER_INACTIVE
         )
 
+        # Focus left the Images column (any destination, including other
+        # windows): retire the image preview.
+        if not active_image:
+            self._hide_image_preview()
+
     # ------------------------------------------------------------------
     # Clipboard monitoring
     # ------------------------------------------------------------------
@@ -694,6 +801,91 @@ class ClipboardManagerWidget(QWidget):
         self._update_empty_state(self._image_list)
         self._update_count()
 
+    # ------------------------------------------------------------------
+    # Image preview popup (v1.10.351)
+    # ------------------------------------------------------------------
+
+    def _on_image_current_changed(self, _current=None, _previous=None):
+        """Selection moved in the Images column: hide any visible
+        preview immediately and re-arm the pause timer, so the preview
+        follows the user's navigation with a ~350 ms settle delay."""
+        if self._preview_popup is not None and self._preview_popup.isVisible():
+            self._preview_popup.hide()
+        if self._image_list.hasFocus():
+            self._preview_timer.start()
+
+    def _hide_image_preview(self):
+        self._preview_timer.stop()
+        if self._preview_popup is not None:
+            self._preview_popup.hide()
+
+    def _ensure_preview_popup(self) -> QLabel:
+        if self._preview_popup is None:
+            popup = QLabel(
+                None,
+                Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+            popup.setStyleSheet(
+                "background-color: white; border: 1px solid #888;")
+            popup.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._preview_popup = popup
+        return self._preview_popup
+
+    def _show_image_preview(self):
+        """Pause timer fired: show the preview for the current image.
+
+        Guards re-check focus and visibility at fire time – the timer
+        may outlive a fast Alt+Tab or tab switch."""
+        lst = self._image_list
+        if not self.isVisible() or not lst.hasFocus():
+            return
+        item = lst.currentItem()
+        if item is None or item.data(_ROLE_KIND) != 'image':
+            return
+        png = item.data(_ROLE_IMG)
+        if not png:
+            db = self._get_db()
+            item_id = item.data(_ROLE_DB_ID)
+            if db and item_id is not None:
+                png = db.get_clipboard_image_data(item_id)
+        if not png:
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(png, "PNG") or pixmap.isNull():
+            return
+
+        screen = self.screen()
+        if screen is None:
+            from PyQt6.QtGui import QGuiApplication
+            screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        # "Decent-sized": up to ~40 % of the screen's width / 55 % of
+        # its height, never upscaled beyond the image's natural size.
+        max_w = max(320, int(avail.width() * 0.40))
+        max_h = max(240, int(avail.height() * 0.55))
+        if pixmap.width() > max_w or pixmap.height() > max_h:
+            pixmap = pixmap.scaled(
+                max_w, max_h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+
+        popup = self._ensure_preview_popup()
+        popup.setPixmap(pixmap)
+        popup.setFixedSize(pixmap.width() + 2, pixmap.height() + 2)
+
+        # Place the preview to the LEFT of the Images column, aligned
+        # with the current row (the Menu column sits to the right, and
+        # covering the transient Text column is the least disruptive
+        # option). Clamped to the available screen area.
+        rect = lst.visualItemRect(item)
+        anchor = lst.viewport().mapToGlobal(rect.topLeft())
+        x = anchor.x() - popup.width() - 12
+        y = anchor.y()
+        x = max(avail.left() + 8, x)
+        y = max(avail.top() + 8,
+                min(y, avail.bottom() - popup.height() - 8))
+        popup.move(x, y)
+        popup.show()
+
     def _make_thumbnail(self, png_bytes: bytes):
         pixmap = QPixmap()
         if not pixmap.loadFromData(png_bytes, "PNG"):
@@ -746,6 +938,7 @@ class ClipboardManagerWidget(QWidget):
         the constructor for backward compatibility but are no
         longer load-bearing.
         """
+        self._hide_image_preview()
         kind = item.data(_ROLE_KIND)
         if kind == 'text':
             text = item.data(_ROLE_TEXT)
@@ -803,6 +996,8 @@ class ClipboardManagerWidget(QWidget):
         menu = QMenu(self)
         act_delete = None
         act_type = None
+        act_snip_personal = None
+        act_snip_special = None
         if item is not None:
             act_delete = menu.addAction("🗑 Delete")
             # Per-item one-off: force the typing path for this paste,
@@ -810,6 +1005,15 @@ class ClipboardManagerWidget(QWidget):
             # method is left on Ctrl+V / Auto. Text clips only.
             if item.data(_ROLE_KIND) == 'text':
                 act_type = menu.addAction("⌨ Paste by typing")
+                # v1.10.349: promote a clip straight into the snippet
+                # library (Menu column) without leaving the Clipboard
+                # Manager – previously this meant hand-creating an .md
+                # file under snippet_library/ and hitting Refresh.
+                menu.addSeparator()
+                act_snip_personal = menu.addAction(
+                    "\U0001F4C7 Save to Personal Snippets…")
+                act_snip_special = menu.addAction(
+                    "✨ Save to Special Characters…")
             menu.addSeparator()
         act_clear = menu.addAction("Clear all")
 
@@ -835,6 +1039,10 @@ class ClipboardManagerWidget(QWidget):
             self._delete_item(item, list_widget)
         elif action == act_type and item is not None:
             self._paste_item_by_typing(item)
+        elif action == act_snip_personal and item is not None:
+            self._add_clip_as_snippet(item, "Personal Snippets")
+        elif action == act_snip_special and item is not None:
+            self._add_clip_as_snippet(item, "Special Characters")
         elif action == act_clear:
             self._clear_all()
         elif action in method_actions:
@@ -1007,6 +1215,12 @@ class ClipboardManagerWidget(QWidget):
         tree.itemExpanded.connect(self._update_expand_indicators)
         tree.itemCollapsed.connect(self._update_expand_indicators)
         tree.installEventFilter(self)
+        # v1.10.349: right-click menu for managing snippets in place
+        # (new / edit / delete / open folder) instead of hand-editing
+        # .md files under snippet_library/ and hitting Refresh.
+        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tree.customContextMenuRequested.connect(
+            self._on_action_tree_context_menu)
         # Assign self._action_tree *before* _populate_action_tree runs –
         # the populate helpers (_make_action_category etc.) reference
         # self._action_tree to addTopLevelItem onto it. Without this
@@ -1171,18 +1385,277 @@ class ClipboardManagerWidget(QWidget):
             }
             default_icon = "\U0001F4C1"                # 📁
 
-            for cat_name in sorted(by_category.keys(), key=str.lower):
+            # v1.10.350: enumerate folders straight from disk (not just
+            # from loaded snippet files) so nested subfolders render as
+            # sub-nodes – and a freshly created EMPTY folder appears on
+            # the next Refresh too, instead of silently not showing up
+            # until it contains a snippet.
+            all_categories = set(by_category.keys())
+            disk_subfolders = {}   # cat name -> set of subpath tuples
+            try:
+                for cat_dir in library_dir.iterdir():
+                    if not cat_dir.is_dir() or cat_dir.name.startswith('.'):
+                        continue
+                    all_categories.add(cat_dir.name)
+                    subs = set()
+                    for d in cat_dir.rglob('*'):
+                        if d.is_dir() and not d.name.startswith('.'):
+                            subs.add(d.relative_to(cat_dir).parts)
+                    disk_subfolders[cat_dir.name] = subs
+            except Exception as e:
+                print(f"[ClipboardManagerWidget] snippet folder scan "
+                      f"failed: {e}")
+
+            for cat_name in sorted(all_categories, key=str.lower):
                 icon = category_icons.get(cat_name, default_icon)
                 cat_item = self._make_action_category(f"{icon} {cat_name}")
-                for snip in sorted(by_category[cat_name], key=lambda s: s['label'].lower()):
+                cat_item.setData(0, _ROLE_TREE_SNIPPET,
+                                 ('category', cat_name, ''))
+
+                # Sub-nodes on demand, parents created recursively. The
+                # right-click metadata carries the folder path RELATIVE
+                # to snippet_library/ (e.g. "Personal Snippets/Trados"),
+                # so "New snippet in …" lands new files in that exact
+                # subfolder. Default-arg binding pins this iteration's
+                # category/node-map (no late-binding across the loop).
+                node_for = {(): cat_item}
+
+                def _folder_node(subpath, _cat=cat_name, _nodes=node_for):
+                    if subpath in _nodes:
+                        return _nodes[subpath]
+                    parent = _folder_node(subpath[:-1], _cat, _nodes)
+                    sub = QTreeWidgetItem(
+                        [f"{default_icon} {subpath[-1]}"])
+                    sub.setData(0, Qt.ItemDataRole.UserRole,
+                                self._CATEGORY_SENTINEL)
+                    rel = _cat + '/' + '/'.join(subpath)
+                    sub.setData(0, _ROLE_TREE_SNIPPET,
+                                ('category', rel, ''))
+                    parent.addChild(sub)
+                    _nodes[subpath] = sub
+                    return sub
+
+                # Folders first (sorted, parents before children), then
+                # leaves per folder – file-manager-style ordering.
+                for subpath in sorted(
+                        disk_subfolders.get(cat_name, ()),
+                        key=lambda p: tuple(x.lower() for x in p)):
+                    _folder_node(subpath)
+
+                for snip in sorted(
+                        by_category.get(cat_name, []),
+                        key=lambda s: (
+                            tuple(x.lower()
+                                  for x in s.get('subfolders', ())),
+                            s['label'].lower())):
+                    subf = tuple(s for s in snip.get('subfolders', ()))
+                    parent = _folder_node(subf)
+                    rel_folder = (cat_name if not subf
+                                  else cat_name + '/' + '/'.join(subf))
                     body = snip['body']
-                    self._add_action_leaf(
-                        cat_item, snip['label'],
+                    leaf = self._add_action_leaf(
+                        parent, snip['label'],
                         lambda t=body: self._copy_to_clipboard(t),
                     )
+                    leaf.setData(0, _ROLE_TREE_SNIPPET,
+                                 ('snippet', rel_folder, str(snip['path'])))
 
         except Exception as e:
             print(f"[ClipboardManagerWidget] Snippet population error: {e}")
+
+    # ---- Snippet management (v1.10.349) --------------------------------
+    #
+    # Everything below lets the user create / edit / delete snippets from
+    # inside the Clipboard Manager via right-click, instead of hand-editing
+    # .md files under <user_data>/snippet_library/ and pressing Refresh.
+    # The on-disk format is unchanged: one .md file per snippet, filename
+    # = label, body = inserted text, top-level folder = category.
+
+    def _snippet_library_dir(self):
+        """Path of <user_data>/snippet_library, or None if the host app
+        doesn't expose a user_data_path (headless tests)."""
+        user_data_path = getattr(self._parent_app, 'user_data_path', None)
+        if not user_data_path:
+            return None
+        return Path(user_data_path) / "snippet_library"
+
+    def _notify(self, msg: str):
+        """Small confirmation to app log + status bar (no ⚠ prefix –
+        these are successes, unlike _paste_diag's warnings)."""
+        print(f"[ClipboardManagerWidget] {msg}")
+        app = self._parent_app
+        try:
+            if hasattr(app, 'log'):
+                app.log(msg)
+        except Exception:
+            pass
+        try:
+            sb = getattr(app, 'status_bar', None)
+            if sb is not None:
+                sb.showMessage(msg, 4000)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _unique_snippet_path(folder: Path, label: str) -> Path:
+        """Filename for ``label`` in ``folder`` that doesn't collide with
+        an existing snippet – appends " (2)", " (3)", … when needed."""
+        from modules.snippet_library import SnippetLibrary
+        stem = SnippetLibrary._safe_filename(label)
+        path = folder / f"{stem}.md"
+        n = 2
+        while path.exists():
+            path = folder / f"{stem} ({n}).md"
+            n += 1
+        return path
+
+    def _on_action_tree_context_menu(self, pos):
+        """Right-click on the Menu column: snippet management actions.
+
+        Snippet leaves get Edit / Delete / New-in-category; snippet
+        category headers get New-in-category; anywhere else (including
+        empty space) offers a new Personal Snippet. Text Conversions and
+        Prompts nodes aren't editable here – they have their own
+        file-backed workflows – but the "open folder" escape hatch is
+        always available.
+        """
+        tree = self._action_tree
+        item = tree.itemAt(pos)
+        meta = item.data(0, _ROLE_TREE_SNIPPET) if item is not None else None
+
+        menu = QMenu(self)
+        act_edit = act_delete = None
+        if meta and meta[0] == 'snippet':
+            target_category = meta[1]
+            act_edit = menu.addAction("✏ Edit snippet…")
+            act_delete = menu.addAction("🗑 Delete snippet")
+            menu.addSeparator()
+            act_new = menu.addAction(
+                f"➕ New snippet in \"{target_category}\"…")
+        elif meta and meta[0] == 'category':
+            target_category = meta[1]
+            act_new = menu.addAction(
+                f"➕ New snippet in \"{target_category}\"…")
+        else:
+            target_category = "Personal Snippets"
+            act_new = menu.addAction("➕ New Personal Snippet…")
+        menu.addSeparator()
+        act_open = menu.addAction("📂 Open snippets folder")
+
+        action = menu.exec(tree.viewport().mapToGlobal(pos))
+        if action is None:
+            return
+        if action == act_new:
+            self._new_snippet_dialog(target_category)
+        elif act_edit is not None and action == act_edit:
+            self._edit_snippet_dialog(meta[2])
+        elif act_delete is not None and action == act_delete:
+            self._delete_snippet(meta[2])
+        elif action == act_open:
+            self._open_snippets_folder()
+
+    def _open_snippets_folder(self):
+        lib_dir = self._snippet_library_dir()
+        if lib_dir is None:
+            return
+        try:
+            lib_dir.mkdir(parents=True, exist_ok=True)
+            from modules.platform_helpers import open_folder
+            open_folder(str(lib_dir))
+        except Exception as e:
+            print(f"[ClipboardManagerWidget] open snippets folder failed: {e}")
+
+    def _add_clip_as_snippet(self, item: QListWidgetItem, category: str):
+        """Right-click on a text clip → seed the new-snippet dialog with
+        the clip's text. The label prefill is a squashed preview the user
+        can overwrite; the body is the clip verbatim."""
+        text = item.data(_ROLE_TEXT)
+        if not text:
+            return
+        label = re.sub(r'\s+', ' ', text).strip()[:40]
+        self._new_snippet_dialog(category, prefill_label=label,
+                                 prefill_body=text)
+
+    def _new_snippet_dialog(self, category: str, *,
+                            prefill_label: str = "",
+                            prefill_body: str = ""):
+        lib_dir = self._snippet_library_dir()
+        if lib_dir is None:
+            return
+        dlg = SnippetEditDialog(
+            self, title=f"New snippet – {category}",
+            label_text=prefill_label, body_text=prefill_body)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            folder = lib_dir / category
+            folder.mkdir(parents=True, exist_ok=True)
+            path = self._unique_snippet_path(folder, dlg.result_label)
+            path.write_text(dlg.result_body.rstrip('\n') + '\n',
+                            encoding='utf-8')
+        except Exception as e:
+            self._notify(f"⚠ Could not save snippet: {e}")
+            return
+        self._populate_action_tree()
+        self._notify(f"✓ Snippet \"{dlg.result_label}\" added to {category}")
+
+    def _edit_snippet_dialog(self, path_str: str):
+        """Edit an existing snippet's label and/or body.
+
+        Always writes the result as ``<safe(label)>.md`` with a bare
+        body – i.e. a label change renames the file, and a legacy
+        front-matter file gets normalised to the current filename-is-
+        the-label format on first edit (same as the v1.9.459 default
+        migration did for shipped snippets).
+        """
+        from modules.snippet_library import SnippetLibrary, _split_front_matter
+        path = Path(path_str)
+        try:
+            raw = path.read_text(encoding='utf-8')
+        except Exception as e:
+            self._notify(f"⚠ Could not read snippet file: {e}")
+            return
+        meta, body = _split_front_matter(raw)
+        label = meta.get('name') or path.stem
+
+        dlg = SnippetEditDialog(self, title="Edit snippet",
+                                label_text=label,
+                                body_text=body.rstrip('\n'))
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            target = path.parent / (
+                SnippetLibrary._safe_filename(dlg.result_label) + '.md')
+            if target != path and target.exists():
+                target = self._unique_snippet_path(path.parent,
+                                                   dlg.result_label)
+            target.write_text(dlg.result_body.rstrip('\n') + '\n',
+                              encoding='utf-8')
+            if target != path:
+                path.unlink(missing_ok=True)
+        except Exception as e:
+            self._notify(f"⚠ Could not save snippet: {e}")
+            return
+        self._populate_action_tree()
+        self._notify(f"✓ Snippet \"{dlg.result_label}\" saved")
+
+    def _delete_snippet(self, path_str: str):
+        path = Path(path_str)
+        answer = QMessageBox.question(
+            self, "Delete snippet",
+            f"Delete the snippet \"{path.stem}\"?\n\n"
+            f"This removes the file\n{path}\nand cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path.unlink()
+        except Exception as e:
+            self._notify(f"⚠ Could not delete snippet: {e}")
+            return
+        self._populate_action_tree()
+        self._notify(f"✓ Snippet \"{path.stem}\" deleted")
 
     # ---- Text Conversions ---------------------------------------------
 

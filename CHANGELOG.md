@@ -2,7 +2,84 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.339 (July 12, 2026)
+**Current Version:** v1.10.348 (July 16, 2026)
+
+
+## v1.10.348 – July 16, 2026
+
+### Changed (cleanup after the elevated-run keyboard fix)
+
+- **Removed the temporary "Esc does nothing" diagnostics** (the application-level Escape probe, the window-activation logging, and the per-press handler log) now that v1.10.347's NULL-keyboard-focus repair is confirmed working in elevated runs. The defensive layers stay: the post-summon focus verification + `SetFocus` repair, the foreground-grab retry, the `keyPressEvent` Esc fallback, the ambiguous-shortcut guard, and the `⏱ Clipboard summon` timing line (now a permanent, once-per-summon diagnostic).
+
+
+## v1.10.347 – July 16, 2026
+
+### Fixed (Clipboard manager: keyboard dead after summon when Workbench runs elevated)
+
+- **Root cause of "Esc does nothing" identified – it only occurred when Workbench ran as administrator** (as users matching an elevated Trados Studio must). The foreground-grab dance (`AttachThreadInput` attach/detach) can leave the input queue's raw keyboard-focus window NULL: the window gets `WM_ACTIVATE` (Qt reports it active), it genuinely is the foreground window, and mouse clicks work – but the OS has no focus HWND to deliver `WM_KEYDOWN` to, so every keystroke (Esc, arrows, Enter) silently evaporated before reaching Qt. Elevated runs consistently took this unlucky path; regular runs didn't.
+- **Fix:** the post-summon verification now also checks `GetFocus()` and, when the queue's focus window is NULL despite Workbench being foreground, repairs it with `SetFocus` (logged as `[Focus] keyboard focus was NULL … repaired`). Esc – and keyboard navigation in general – should now work in the summoned Clipboard manager in elevated runs too.
+
+
+## v1.10.346 – July 16, 2026
+
+### Changed (temporary diagnostics for the "Esc does nothing" hunt)
+
+- v1.10.345 proved the Esc keypress never reaches any Qt handler (no `[Esc]` lines despite shortcut + keyPressEvent fallback). This build instruments the two remaining suspects: an application-level probe logs every Escape key event Qt receives while a quick-lookup tab is current (`[EscProbe] KeyPress → <receiver>`), and the main window logs activation changes (`[Focus] main window DEACTIVATED`) so a silent focus flip back to the source app right after the summon becomes visible. One repro run now yields a decisive log signature; these diagnostics will be removed once the culprit is found.
+
+
+## v1.10.345 – July 16, 2026
+
+### Fixed (Clipboard manager: Esc dismiss gets a second, shortcut-independent path + full diagnostics)
+
+- **Esc dismissal no longer depends solely on Qt's shortcut system.** v1.10.344 established that the summoned window does receive keyboard focus (`keyboard-active yes`) yet Esc still did nothing – meaning the Escape keypress is being lost somewhere between Qt's shortcut map and the dismiss handler. The main window now also catches Esc in `keyPressEvent`: a plain-Esc KeyPress only ever bubbles up there when no shortcut consumed it, which is exactly the reported failure mode, so the fallback dismisses from that path and logs that it (rather than the shortcut) fired.
+- **Every Esc on a quick-lookup tab is now visible in the log**: handler fired (`[Esc] dismiss handler fired…`), gated by a focused text input (`[Esc] ignored – text input focused…`), dismissed to tray/minimized, or caught by the keyPressEvent fallback – so the next report pinpoints the failing link exactly instead of "nothing happens".
+
+
+## v1.10.344 – July 16, 2026
+
+### Fixed (Clipboard manager: Esc genuinely dismisses now; summon takes keyboard focus reliably)
+
+- **Root cause of "Esc does absolutely nothing" found and fixed: the summoned window often never had keyboard focus.** `_bring_workbench_forward()` fired the full foreground-grab escalation (Alt-trick, AttachThreadInput, BringWindowToTop, SwitchToThisWindow) but never verified the result. Windows can accept the Z-order change (the window LOOKS summoned, right on top) while quietly refusing the keyboard-focus transfer – in that state mouse clicks still work (clicking self-activates), but Esc and arrow keys go to the app you came from. The summon now verifies the grab ~120 ms later and retries once via the hardened, verified activation path; if Windows still refuses, a clear warning is logged instead of leaving a silent mystery. The `⏱ Clipboard summon` log line now ends with `keyboard-active yes/NO` so this state is visible at a glance.
+- **Esc on the Clipboard tab now hides to the system tray** (the notification-area icons by the clock – what the "get out of the way" request actually meant), after handing focus back to the source app, reverting v1.10.343's minimize-to-taskbar interpretation. If no tray icon exists it minimizes instead, so Esc never falls back to doing nothing.
+- **Esc can no longer be nulled by a shortcut conflict.** If any other window-level Escape shortcut ever coexists with the dismiss shortcut, Qt declares the keypress ambiguous and fires *neither* handler. The dismiss shortcut now also listens on `activatedAmbiguously`, logging the conflict and dismissing anyway.
+
+
+## v1.10.343 – July 16, 2026
+
+### Changed (Clipboard manager: Esc now minimizes to the taskbar and returns focus to the source app)
+
+- **Pressing Esc on the Clipboard tab now minimizes Workbench to the taskbar** instead of hiding it into the system tray. A Ctrl+Alt+C summon feels like a popup visit; dismissing it should park Workbench where it stays visible and re-grabbable – the taskbar – rather than make the window vanish. (SuperLookup and Voice keep their established Esc-to-tray behaviour.)
+- **Esc also hands focus straight back to the app you summoned the Clipboard manager from**, so Ctrl+Alt+C → look something up → Esc lands you exactly where you were working, no Alt+Tab needed. The pending paste-back target is cleared at the same time: Esc means "never mind", so a clip clicked later (after navigating to the tab manually) can no longer paste-and-return into a stale window from an earlier summon.
+- The Esc dismissal on the Clipboard tab (including the return-to-prior-tab path for in-Workbench summons) no longer requires a system-tray icon – that gate only ever existed because *hiding* without a tray would strand the user; minimizing has no such risk. The focus-aware guard is unchanged: Esc still keeps its normal behaviour while a text-input field has focus.
+
+
+## v1.10.342 – July 16, 2026
+
+### Changed (Clipboard manager: summon opens up to ~450 ms sooner when nothing is selected)
+
+- **The copy-detection cap dropped from 700 ms to 250 ms.** When Ctrl+Alt+C is pressed with no text selected, the synthetic Ctrl+C is a no-op and the clipboard sequence number never moves – so the summon was waiting out the full 700 ms cap for a copy that would never land, on every empty-handed summon. The cap is now a 250 ms floor (the pre-v1.10.340 value). Copies that land *after* the window is already open – e.g. Word or Trados copying a large selection – still surface correctly: the clip is inserted at the top of the visible list and, if the user hasn't navigated below the top row, **the selection snaps to it**, so Enter pastes the clip that was just copied rather than the previous one.
+- **Summon-latency breakdown in the log.** Every Ctrl+Alt+C now logs one line, e.g. `⏱ Clipboard summon: 480 ms total (copy-wait 130 ms, bring-forward 95 ms, tab+focus 40 ms)`, so any remaining sluggishness can be attributed to a specific stage instead of guessed at.
+
+
+## v1.10.341 – July 16, 2026
+
+### Changed (Clipboard manager: faster Ctrl+Alt+C summon)
+
+- **Pressing Ctrl+Alt+C now starts opening the Clipboard manager ~200 ms sooner.** The auto-copy step used to block the UI thread for the full AutoHotkey round trip – write a temp script, spawn AutoHotkey.exe, sit through the script's built-in 100 ms sleep, wait for teardown (~190 ms measured warm, worse under antivirus load) – before the window was even asked to come forward. The sender is now launched fire-and-forget (~7 ms on the main thread); the sequence-number polling introduced in v1.10.340 already detects exactly when the copy lands, so nothing needed to wait for the subprocess to finish.
+- **The Ctrl+C helper script is now written once and reused** instead of a fresh temp file per summon. Windows Defender re-scans freshly written script files at execution time, which added jittery latency to every single summon; a stable, unchanging file is scanned once and then cached.
+- **Hardening:** the clipboard history no longer marks itself "loaded" when the database isn't ready yet – previously an early load attempt could leave the history permanently empty for that session.
+
+
+## v1.10.340 – July 16, 2026
+
+### Fixed (Clipboard manager: paste-back reliability overhaul, Phase 1)
+
+Four structural weaknesses in the paste path – each an independent source of the intermittent "clicked a clip, nothing pasted" failures – are replaced with deterministic mechanisms:
+
+- **Clipboard writes now retry through contention and verify with a read-back.** The Win32 clipboard is a single globally-contended resource; `OpenClipboard` fails whenever anything else momentarily holds it (Win+V clipboard history, OneDrive, TeamViewer, Office, Trados' own clipboard hooks). The old native write tried exactly once and then fell back to Qt's clipboard – whose OLE delayed rendering is precisely the mechanism that intermittently hands consumers an empty paste. The write now retries with backoff (~1 s worst case), reads the clipboard back to confirm the text really landed, and rewrites if another writer raced us. If the clipboard genuinely cannot be written, the paste is cancelled with a clear log/status-bar message instead of silently pasting stale content.
+- **Ctrl+V is now injected in-process via `SendInput` instead of an AutoHotkey subprocess.** The old path wrote a fresh `.ahk` script to `%TEMP%` and launched AutoHotkey.exe for every paste: Defender scans freshly-written scripts at execution time (hundreds of ms of jitter, occasionally a block), process spawn added 50–200 ms, machines without AHK fell back to the slower PowerShell `SendKeys`, and the foreground window could drift during the Python→AHK hand-off. The keystroke is now injected directly by Workbench in the same instant it verifies the target window is foreground – no temp file, no subprocess, no hand-off gap, no AHK dependency. Held modifiers (e.g. Ctrl/Alt still down from the Ctrl+Alt+C hotkey) are handled by *waiting* for their physical release (≤1 s; injected key-ups only as a last resort, since auto-repeat re-presses a held key). The AHK path is retained solely as an emergency fallback if `SendInput` itself errors.
+- **Ctrl+Alt+C now detects when the copy has actually landed instead of hoping 250 ms was enough.** The clipboard sequence number (a kernel-side change counter) is captured before the synthetic Ctrl+C and polled until it moves. Fast apps open the Clipboard tab sooner than before; slow copies (Word / Trados on a large selection) no longer show the *previous* clip at the top of the history. If nothing was selected (the Ctrl+C was a no-op) the tab opens at a 700 ms cap.
+- **The paste now fires when the focus switch has demonstrably settled, not after a fixed 150 ms.** After re-activating the source window, Workbench polls until that window has *stably* owned the foreground, then pastes – typically faster than the old fixed delay, and correct on a loaded machine where 150 ms wasn't enough. On timeout it logs a diagnostic and still attempts the paste (which retries activation itself) rather than failing silently.
 
 
 ## v1.10.339 – July 12, 2026

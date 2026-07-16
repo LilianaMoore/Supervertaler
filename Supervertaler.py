@@ -13086,6 +13086,21 @@ class SupervertalerQt(QMainWindow):
             self._esc_to_tray_shortcut.activated.connect(
                 self._on_esc_quick_lookup_dismiss
             )
+            # v1.10.344: if ANY other window-context shortcut in this
+            # window ever binds Escape, Qt declares the keypress
+            # ambiguous and fires activatedAmbiguously on ALL of them
+            # instead of activated on any – i.e. Esc silently does
+            # nothing. Route the ambiguous signal to the same handler
+            # (with a console note so the conflict is discoverable)
+            # so the dismiss can never be nulled by a future conflict.
+            def _esc_ambiguous():
+                print("[Workbench] Escape shortcut fired AMBIGUOUSLY – "
+                      "another window-level Esc shortcut exists; "
+                      "dismissing anyway.")
+                self._on_esc_quick_lookup_dismiss()
+            self._esc_to_tray_shortcut.activatedAmbiguously.connect(
+                _esc_ambiguous
+            )
         except Exception as e:
             print(f"[Workbench] Esc-to-tray binding failed: {e}")
 
@@ -28388,6 +28403,88 @@ class SupervertalerQt(QMainWindow):
         # expected "neutral" focus state.
         self._dismiss_menu_activation()
 
+        # v1.10.344: VERIFY the grab actually took, a beat later. All
+        # the hammers above can still lose: BringWindowToTop /
+        # SwitchToThisWindow change the Z-ORDER (the window looks
+        # summoned) while Windows quietly refuses the KEYBOARD-focus
+        # transfer. In that state mouse clicks work (clicking
+        # self-activates) but Esc / arrow keys go to the app the user
+        # came from – experienced as "Esc does absolutely nothing".
+        # Verification + one hardened retry converts that silent
+        # failure into either a working window or a logged warning.
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(120, self._verify_foreground_grab)
+        except Exception:
+            pass
+
+    def _verify_foreground_grab(self):
+        """~120 ms after a summon: confirm Workbench really owns the
+        keyboard focus; if not, retry via the hardened
+        ``activate_foreground_window`` (AttachThreadInput + ALT-nudge,
+        verified, up to 3 attempts) and log honestly if Windows still
+        refuses – so a focus-less summon is never a silent mystery."""
+        import sys
+        if sys.platform != 'win32':
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            if user32.GetForegroundWindow() == hwnd:
+                self._repair_null_keyboard_focus(user32, hwnd)
+                return
+            from modules.platform_helpers import activate_foreground_window
+            if activate_foreground_window(hwnd):
+                print("[Workbench] foreground grab needed a verified retry "
+                      "(2nd attempt succeeded)")
+                self._repair_null_keyboard_focus(user32, hwnd)
+                return
+        except Exception as e:
+            print(f"[Workbench] foreground verification failed: {e}")
+            return
+        msg = ("⚠ Windows refused to hand Workbench keyboard focus after "
+               "the summon – Esc / arrow keys may still act on the "
+               "previous app. Click once inside Workbench to fix.")
+        print(f"[Workbench] {msg}")
+        try:
+            self.log(msg)
+        except Exception:
+            pass
+
+    def _repair_null_keyboard_focus(self, user32, hwnd):
+        """Repair the NULL-keyboard-focus state AttachThreadInput can
+        leave behind (v1.10.347, the "Esc does nothing when Workbench
+        runs elevated" fix).
+
+        The foreground-grab dance attaches our input queue to the old
+        foreground thread's and detaches again. A documented side
+        effect: the detach can leave OUR queue's raw focus window NULL
+        – the window received WM_ACTIVATE (Qt reports active), it IS
+        the foreground window, mouse clicks work, but the OS has no
+        focus HWND to deliver WM_KEYDOWN to, so every keystroke
+        (Esc, arrows, Enter) silently evaporates before Qt sees it.
+        Observed specifically when Workbench runs elevated (matching
+        an elevated Trados); regular runs take a luckier path.
+
+        GetFocus()/SetFocus operate on the CALLING thread's queue, and
+        this runs on the Qt GUI thread that owns the window – exactly
+        the thread whose queue needs the repair.
+        """
+        try:
+            if user32.GetFocus():
+                return  # some window of ours has focus – healthy
+            from ctypes import wintypes
+            user32.SetFocus.argtypes = [wintypes.HWND]
+            user32.SetFocus(hwnd)
+            try:
+                self.log("[Focus] keyboard focus was NULL after the "
+                         "foreground grab – repaired via SetFocus")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[Workbench] NULL-focus repair failed: {e}")
+
     def _dismiss_menu_activation(self):
         """Clear any leaked menu-bar activation after a foreground
         grab. Called from _bring_workbench_forward(); safe to call
@@ -28500,11 +28597,15 @@ class SupervertalerQt(QMainWindow):
             # _bring_workbench_forward() actually get processed before
             # the heavy lazy-tab ensure blocks the GUI thread. See
             # open_workbench_to_superlookup for the full diagnosis.
+            import time as _time
+            _bring_t0 = _time.perf_counter()
             self._bring_workbench_forward()
+            _bring_ms = (_time.perf_counter() - _bring_t0) * 1000
             from PyQt6.QtCore import QTimer
 
             def _continue_clipboard():
                 try:
+                    _tab_t0 = _time.perf_counter()
                     if hasattr(self, '_ensure_clipboard_top_tab'):
                         self._ensure_clipboard_top_tab()
                     if hasattr(self, 'clipboard_tab_index') and hasattr(self, 'main_tabs'):
@@ -28529,6 +28630,39 @@ class SupervertalerQt(QMainWindow):
                                 widget.setFocus()
                         except Exception:
                             pass
+
+                    # Summon-latency breakdown. Logged one event-loop
+                    # turn later so the tab switch's queued paint work
+                    # is included – closer to what the user perceives.
+                    _tab_ms = (_time.perf_counter() - _tab_t0) * 1000
+
+                    def _log_summon_timing():
+                        try:
+                            t0 = getattr(self, '_clip_summon_t0', None)
+                            if not t0:
+                                return
+                            self._clip_summon_t0 = None
+                            total = (_time.perf_counter() - t0) * 1000
+                            copy_ms = getattr(
+                                self, '_clip_summon_copy_ms', None)
+                            copy_txt = (f"{copy_ms:.0f}"
+                                        if copy_ms is not None else "?")
+                            # keyboard-active NO = Windows refused the
+                            # focus handover; keys would go to the
+                            # source app (the _verify_foreground_grab
+                            # retry should normally rescue this).
+                            active = ('yes' if self.isActiveWindow()
+                                      else 'NO')
+                            self.log(
+                                f"⏱ Clipboard summon: {total:.0f} ms total "
+                                f"(copy-wait {copy_txt} ms, bring-forward "
+                                f"{_bring_ms:.0f} ms, tab+focus "
+                                f"{_tab_ms:.0f} ms, keyboard-active "
+                                f"{active})")
+                        except Exception:
+                            pass
+
+                    QTimer.singleShot(0, _log_summon_timing)
                 except Exception as inner:
                     self.log(f"⚠ Could not finish Clipboard open: {inner}")
 
@@ -32368,19 +32502,26 @@ class SupervertalerQt(QMainWindow):
         self.activateWindow()
 
     def _on_esc_quick_lookup_dismiss(self):
-        """Hide Workbench to the system tray when Esc is pressed
-        while the user is on a "quick lookup" top tab.
+        """Dismiss Workbench when Esc is pressed on a "quick lookup"
+        top tab.
 
-        Two gates always apply:
+        Per-tab dismissal action:
 
-        1. Current tab is one of SuperLookup / Clipboard / Voice.
-           On Editor / TMs / Termbases / AI / Settings, Esc keeps
-           its natural editor / dialog / combo-box semantics
-           (cancel-edit, close-popup, etc.).
+        - **SuperLookup / Voice**: hide to the system tray (requires a
+          tray icon – without one, hiding would strand the user in an
+          invisible window, so those tabs fail closed).
+        - **Clipboard**: hand focus back to the app the user came
+          from, then hide to the tray (v1.10.343/344, user request:
+          "Esc should get out of the way"). Falls back to minimizing
+          to the taskbar when no tray icon exists, so Esc can never
+          silently do nothing. Any pending paste-back source is
+          consumed (Esc means "never mind"), so a later manual clip
+          click can't paste into a stale window.
 
-        2. A system-tray icon exists. Without a tray, hiding would
-           strand the user in an invisible window. Fail closed on
-           platforms without tray support.
+        Gate that always applies: the current tab is one of
+        SuperLookup / Clipboard / Voice. On Editor / TMs / Termbases /
+        AI / Settings, Esc keeps its natural editor / dialog /
+        combo-box semantics (cancel-edit, close-popup, etc.).
 
         Per-tab text-input gate (v1.10.19 refinement):
 
@@ -32403,17 +32544,17 @@ class SupervertalerQt(QMainWindow):
         """
         if not hasattr(self, 'main_tabs'):
             return
-        if getattr(self, '_tray_icon', None) is None:
-            return
+        has_tray = getattr(self, '_tray_icon', None) is not None
 
         superlookup_idx = getattr(self, 'superlookup_tab_index', None)
         clipboard_idx = getattr(self, 'clipboard_tab_index', None)
         voice_idx = getattr(self, 'voice_tab_index', None)
         current = self.main_tabs.currentIndex()
 
-        # SuperLookup: unconditional hide.
+        # SuperLookup: unconditional hide (tray required).
         if superlookup_idx is not None and current == superlookup_idx:
-            self.hide()
+            if has_tray:
+                self.hide()
             return
 
         # v1.10.201: in-Workbench Ctrl+Alt+C return path. If the user
@@ -32463,8 +32604,11 @@ class SupervertalerQt(QMainWindow):
                     QAbstractSpinBox,
                 )
                 if isinstance(focused, text_input_types):
+                    self.log(f"[Esc] ignored – text input focused "
+                             f"({type(focused).__name__})")
                     return
                 if isinstance(focused, QComboBox) and focused.isEditable():
+                    self.log("[Esc] ignored – editable combo focused")
                     return
                 # Walk up: a QLineEdit nested inside a custom
                 # composite widget should also count as a text input.
@@ -32477,10 +32621,97 @@ class SupervertalerQt(QMainWindow):
                     hops += 1
         except Exception:
             # If the introspection fails for any reason, fall
-            # through to hide – safer than silently doing nothing.
+            # through to dismiss – safer than silently doing nothing.
             pass
 
-        self.hide()
+        if clipboard_idx is not None and current == clipboard_idx:
+            # Clipboard: focus back to the source app, window out of
+            # the way (tray if available, else minimize).
+            self._dismiss_clipboard_summon()
+            return
+
+        # Voice: hide to tray, as before.
+        if has_tray:
+            self.hide()
+
+    def keyPressEvent(self, event):
+        """Esc fallback for the quick-lookup dismiss (v1.10.345).
+
+        The primary binding is the window-level Escape QShortcut. A
+        plain-Esc KeyPress only ever bubbles up to the main window's
+        keyPressEvent when the shortcut system did NOT consume it –
+        i.e. exactly the failure mode reported as "Esc does nothing".
+        Catching it here makes the dismiss immune to whatever ate the
+        shortcut activation, and the console line records that the
+        fallback (not the shortcut) fired, so the two paths can be
+        told apart in the field.
+        """
+        try:
+            if (event.key() == Qt.Key.Key_Escape
+                    and not event.modifiers()
+                    and hasattr(self, 'main_tabs')):
+                current = self.main_tabs.currentIndex()
+                quick = (getattr(self, 'superlookup_tab_index', None),
+                         getattr(self, 'clipboard_tab_index', None),
+                         getattr(self, 'voice_tab_index', None))
+                if current in quick:
+                    try:
+                        self.log("[Esc] shortcut did not fire – "
+                                 "dismissing via keyPressEvent fallback")
+                    except Exception:
+                        pass
+                    self._on_esc_quick_lookup_dismiss()
+                    event.accept()
+                    return
+        except Exception as e:
+            print(f"[Workbench] Esc keyPressEvent fallback failed: {e}")
+        super().keyPressEvent(event)
+
+    def _dismiss_clipboard_summon(self):
+        """Esc on the Clipboard tab: hand focus back to the app the
+        user was summoned from (if one was captured) and get Workbench
+        out of the way – hidden to the system tray when a tray icon
+        exists (the notification-area icons by the clock, where the
+        Supervertaler icon lives), else minimized to the taskbar so
+        Esc can never silently do nothing.
+
+        The source window is activated FIRST, while Workbench still
+        owns the foreground (Windows grants foreground changes
+        requested by the foreground process; after hiding we'd be
+        refused – same ordering rule the paste-back path follows).
+        The captured source is consumed either way: Esc means "never
+        mind", so a later manual clip click must not paste-and-return
+        into a stale window.
+        """
+        source = None
+        widget = getattr(self, '_clipboard_top_widget', None)
+        if widget is not None:
+            source = getattr(widget, '_source_window', None)
+            try:
+                widget.set_source_window(None)
+            except Exception:
+                pass
+        if source is not None:
+            try:
+                from modules.platform_helpers import (
+                    activate_foreground_window,
+                )
+                activate_foreground_window(source)
+            except Exception as e:
+                print(f"[Clipboard] Esc source re-activate failed: {e}")
+        if getattr(self, '_tray_icon', None) is not None:
+            try:
+                self.log("[Esc] Clipboard dismissed → hidden to tray")
+            except Exception:
+                pass
+            self.hide()
+        else:
+            try:
+                self.log("[Esc] Clipboard dismissed → minimized "
+                         "(no tray icon)")
+            except Exception:
+                pass
+            self.showMinimized()
 
     def _on_toggle_close_to_tray(self, checked: bool):
         prefs = self._load_settings_section("ui")
@@ -70433,6 +70664,16 @@ class SuperlookupTab(QWidget):
         try:
             mw = self.main_window or self.window()
 
+            # Timing anchor for the summon-latency breakdown logged at
+            # the end of open_workbench_to_clipboard's _continue step.
+            try:
+                import time as _time
+                if mw is not None:
+                    mw._clip_summon_t0 = _time.perf_counter()
+                    mw._clip_summon_copy_ms = None
+            except Exception:
+                pass
+
             # Step 1: capture source window before anything else –
             # send_copy() below doesn't change foreground (AHK just
             # synthesises input events), but we want a clean snapshot.
@@ -70447,21 +70688,87 @@ class SuperlookupTab(QWidget):
             # selection (if any) lands on the clipboard. The clipboard
             # widget's QClipboard.dataChanged signal will pick it up
             # and prepend it to the history just before we navigate.
+            # The clipboard sequence number is captured FIRST so step 3
+            # can detect exactly when the copy lands.
+            seq_before = None
+            try:
+                from modules.platform_helpers import (
+                    get_clipboard_sequence_number,
+                )
+                seq_before = get_clipboard_sequence_number()
+            except Exception:
+                pass
             try:
                 from modules.platform_helpers import CrossPlatformKeySender
-                CrossPlatformKeySender().send_copy()
+                # wait=False: don't block the Qt main thread on the AHK
+                # spawn + Sleep + teardown (~150–400 ms). Step 3 below
+                # polls the clipboard sequence number, so it detects the
+                # copy landing regardless of when the sender finishes –
+                # the summon starts opening that much sooner.
+                CrossPlatformKeySender().send_copy(wait=False)
             except Exception as copy_err:
                 print(f"[Clipboard] send_copy failed (non-fatal): {copy_err}")
 
-            # Step 3: after a 250ms breathing room (same delay
-            # SuperLookup uses) the OS has dispatched the synthetic
-            # Ctrl+C, the source app has populated the clipboard,
-            # and QClipboard.dataChanged has fired in our process.
-            # *Now* open the Clipboard tab.
-            QTimer.singleShot(
-                250,
-                lambda sw=source_win: self._open_clipboard_after_copy(sw),
-            )
+            # Step 3: open the tab as soon as the copy has actually
+            # landed, instead of after a blind delay. Windows keeps a
+            # kernel-side clipboard change counter
+            # (GetClipboardSequenceNumber); we captured it before the
+            # synthetic Ctrl+C, so a change means the source app has
+            # really populated the clipboard.
+            #
+            # The 250 ms cap is a FLOOR for the no-copy case, not a
+            # guarantee that every copy has landed: when nothing was
+            # selected the counter never moves, and waiting longer
+            # just delays the window for nothing (a 700 ms cap made
+            # every empty-handed summon feel sluggish). A copy that
+            # lands AFTER the cap – e.g. Word or Trados copying a
+            # large selection – still surfaces correctly: the widget's
+            # dataChanged monitor inserts it at the top of the visible
+            # list and snaps the selection to it (see _add_text_clip's
+            # late-clip selection-follow).
+            # Off-Windows the counter is unavailable (None) and the
+            # old fixed 250 ms behaviour is preserved.
+            state = {'elapsed': 0}
+
+            def _open_when_copy_lands():
+                changed = False
+                if seq_before is not None:
+                    try:
+                        from modules.platform_helpers import (
+                            get_clipboard_sequence_number,
+                        )
+                        seq_now = get_clipboard_sequence_number()
+                        changed = (seq_now is not None
+                                   and seq_now != seq_before)
+                    except Exception:
+                        changed = True  # can't poll – behave like before
+                else:
+                    changed = state['elapsed'] >= 250
+                if changed or state['elapsed'] >= 250:
+                    # Record how long we spent waiting on the copy, for
+                    # the summon-latency breakdown log.
+                    try:
+                        import time as _time
+                        if mw is not None and getattr(
+                                mw, '_clip_summon_t0', None):
+                            mw._clip_summon_copy_ms = (
+                                _time.perf_counter() - mw._clip_summon_t0
+                            ) * 1000
+                    except Exception:
+                        pass
+                    # Small grace so QClipboard.dataChanged (which feeds
+                    # the history list) is processed before the tab opens
+                    # with the new clip expected at row 0.
+                    QTimer.singleShot(
+                        30,
+                        lambda sw=source_win:
+                            self._open_clipboard_after_copy(sw),
+                    )
+                    return
+                state['elapsed'] += 25
+                QTimer.singleShot(25, _open_when_copy_lands)
+
+            QTimer.singleShot(25, _open_when_copy_lands)
         except Exception as e:
             print(f"[Clipboard] Error in clipboard hotkey handler: {e}")
 

@@ -280,24 +280,69 @@ def activate_foreground_window(handle):
     try:
         if IS_WINDOWS:
             import ctypes
+            import time
             user32 = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
 
-            # Attach to current foreground thread so SetForegroundWindow succeeds
-            fg_hwnd = user32.GetForegroundWindow()
-            fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+            SW_RESTORE = 9
+            VK_MENU = 0x12          # ALT
+            KEYEVENTF_KEYUP = 0x0002
+
+            def _is_foreground():
+                # Both values come from GetForegroundWindow with ctypes' default
+                # (signed 32-bit) marshalling, so they compare consistently.
+                return user32.GetForegroundWindow() == handle
+
+            # Already focused? Nothing to do.
+            if _is_foreground():
+                return True
+
+            # Un-minimize ONLY if the target is minimized – never SW_RESTORE an
+            # already-visible window, which would un-maximize a maximized editor.
+            try:
+                if user32.IsIconic(handle):
+                    user32.ShowWindow(handle, SW_RESTORE)
+            except Exception:
+                pass
+
             our_thread = kernel32.GetCurrentThreadId()
-            attached = False
-            if fg_thread != our_thread:
-                attached = user32.AttachThreadInput(fg_thread, our_thread, True)
 
-            # Only SetForegroundWindow – don't call ShowWindow(SW_RESTORE)
-            # as that would un-maximize a maximized browser/editor window
-            user32.SetForegroundWindow(handle)
+            # Windows silently refuses SetForegroundWindow from a background
+            # process under the foreground-lock timeout / a failed attach /
+            # timing. So attempt it, VERIFY the switch actually took, and retry
+            # with escalating nudges. This replaces the old fire-once-and-always-
+            # return-True behaviour that made intermittent paste-into-nowhere
+            # failures invisible to the caller.
+            for attempt in range(3):
+                fg_hwnd = user32.GetForegroundWindow()
+                fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+                attached = False
+                if fg_thread and fg_thread != our_thread:
+                    attached = user32.AttachThreadInput(fg_thread, our_thread, True)
 
-            if attached:
-                user32.AttachThreadInput(fg_thread, our_thread, False)
-            return True
+                # On retries, a stray ALT tap releases the foreground lock so the
+                # OS honours SetForegroundWindow from the background. (Benign for
+                # the target app; the key is pressed and released immediately.)
+                if attempt > 0:
+                    try:
+                        user32.keybd_event(VK_MENU, 0, 0, 0)
+                        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+                    except Exception:
+                        pass
+
+                user32.BringWindowToTop(handle)
+                user32.SetForegroundWindow(handle)
+
+                if attached:
+                    user32.AttachThreadInput(fg_thread, our_thread, False)
+
+                if _is_foreground():
+                    return True
+                time.sleep(0.03)  # let the async switch settle, then re-check
+
+            # Honestly report failure so the caller can react (e.g. retry the
+            # whole paste) instead of firing Ctrl+V into nowhere.
+            return _is_foreground()
 
         elif IS_MACOS:
             # handle is the process name
@@ -323,6 +368,284 @@ def activate_foreground_window(handle):
     except Exception as e:
         print(f"[platform_helpers] activate_foreground_window failed: {e}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Native clipboard access (Windows) – event-loop-independent
+# ---------------------------------------------------------------------------
+#
+# The Win32 clipboard is a single globally-contended resource: OpenClipboard
+# fails whenever ANY other process momentarily holds it, and on a typical
+# Windows 10/11 machine something frequently does – the Win+V clipboard
+# history, OneDrive, TeamViewer, Office, Trados' own clipboard hooks. Every
+# access here therefore retries OpenClipboard with a short backoff instead of
+# giving up on the first BUSY, the same strategy dedicated clipboard managers
+# (Ditto, CopyQ) use.
+
+_CF_UNICODETEXT = 13
+_GMEM_MOVEABLE = 0x0002
+
+
+def _open_clipboard_with_retry(user32, retries: int = 15,
+                               delay_s: float = 0.02) -> bool:
+    """OpenClipboard with retry/backoff. ~300 ms worst case at defaults."""
+    for _ in range(retries):
+        if user32.OpenClipboard(None):
+            return True
+        time.sleep(delay_s)
+    return False
+
+
+def get_clipboard_sequence_number() -> Optional[int]:
+    """Windows' kernel-maintained clipboard change counter, or None off-
+    Windows / on failure.
+
+    Incremented on every clipboard content change. Capture it before a
+    synthetic Ctrl+C, then poll until it moves to *know* the copy landed –
+    a deterministic replacement for hoping a fixed sleep was long enough.
+    Same trick verifies our own writes.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        return int(ctypes.windll.user32.GetClipboardSequenceNumber())
+    except Exception:
+        return None
+
+
+def get_clipboard_text_native() -> Optional[str]:
+    """Read CF_UNICODETEXT straight from the Win32 clipboard.
+
+    Returns None off-Windows, when no text is on the clipboard, or when the
+    clipboard stayed locked through the (short) retry window – callers should
+    treat None as "couldn't verify", not "empty".
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.GetClipboardData.restype = ctypes.c_void_p
+        user32.GetClipboardData.argtypes = [ctypes.c_uint]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+
+        if not _open_clipboard_with_retry(user32, retries=5):
+            return None
+        try:
+            handle = user32.GetClipboardData(_CF_UNICODETEXT)
+            if not handle:
+                return None
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                return None
+            try:
+                return ctypes.wstring_at(ptr)
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        return None
+
+
+def set_clipboard_text(text) -> bool:
+    """Put ``text`` on the Windows clipboard as a MATERIALISED copy via the
+    native Win32 API (CF_UNICODETEXT), retrying through contention and
+    verifying the write with a read-back.
+
+    Why this exists: Qt's ``QClipboard.setText`` uses OLE delayed rendering –
+    the data stays owned by our process and is only handed over when a consumer
+    reads it, via a callback that must be serviced by our Qt main thread. If
+    that thread is busy at the moment a consumer reads, the consumer pastes
+    nothing – intermittently. Writing a real copy with SetClipboardData removes
+    the callback entirely: the OS holds the bytes, so a read succeeds no matter
+    what our event loop is doing.
+
+    Hardened (Phase 1 of the clipboard-reliability work): the old version
+    tried OpenClipboard exactly once, so any transient holder (Win+V history,
+    OneDrive, Trados hooks – i.e. precisely the machines that need the native
+    write most) bounced us to the Qt fallback and its delayed-rendering
+    failure mode. Now OpenClipboard is retried with backoff, and after a
+    successful write the text is read back; a mismatch (another writer raced
+    us) triggers a rewrite. Returns True only for a verified-or-unverifiable
+    successful write; False means the clipboard genuinely could not be
+    written and callers must NOT paste (they'd paste stale content).
+    """
+    if not IS_WINDOWS or text is None:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.EmptyClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.CloseClipboard.restype = wintypes.BOOL
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+
+        buf = ctypes.create_unicode_buffer(text)  # UTF-16, NUL-terminated
+        size = ctypes.sizeof(buf)                  # bytes, incl. terminator
+
+        for _write_attempt in range(3):
+            if not _open_clipboard_with_retry(user32):
+                continue
+            wrote = False
+            try:
+                user32.EmptyClipboard()
+                h_mem = kernel32.GlobalAlloc(_GMEM_MOVEABLE, size)
+                if h_mem:
+                    ptr = kernel32.GlobalLock(h_mem)
+                    if ptr:
+                        ctypes.memmove(ptr, buf, size)
+                        kernel32.GlobalUnlock(h_mem)
+                        # On success the system takes ownership of h_mem;
+                        # on failure we free it.
+                        if user32.SetClipboardData(_CF_UNICODETEXT, h_mem):
+                            wrote = True
+                        else:
+                            kernel32.GlobalFree(h_mem)
+                    else:
+                        kernel32.GlobalFree(h_mem)
+            finally:
+                user32.CloseClipboard()
+
+            if wrote:
+                # Read-back verification. None = clipboard locked again
+                # before we could re-open it – the write itself succeeded,
+                # so treat unverifiable as success rather than looping.
+                readback = get_clipboard_text_native()
+                if readback is None or readback == text:
+                    return True
+                # Mismatch: another writer raced us between our close and
+                # the read-back. Loop and write again.
+            time.sleep(0.02)
+        return False
+    except Exception as e:
+        print(f"[platform_helpers] set_clipboard_text failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Direct synthetic keystrokes (Windows) – in-process SendInput
+# ---------------------------------------------------------------------------
+#
+# Replaces the AutoHotkey-subprocess paste path. Writing a fresh .ahk file to
+# %TEMP% and executing it per paste invited Defender scan latency (freshly
+# written script files get scanned at execution time), 50–200 ms of process
+# spawn, a PowerShell SendKeys fallback when AHK isn't installed, and a
+# Python→AHK hand-off gap during which the foreground window could drift.
+# SendInput injects the keystroke in-process, immediately after Python itself
+# has verified the target window is foreground – no hand-off, no temp file,
+# no external dependency.
+
+if IS_WINDOWS:
+    import ctypes as _ct
+    from ctypes import wintypes as _wt
+
+    _ULONG_PTR = _ct.c_size_t  # pointer-sized on both 32/64-bit
+    _INPUT_KEYBOARD = 1
+    _KEYEVENTF_KEYUP = 0x0002
+
+    class _KEYBDINPUT(_ct.Structure):
+        _fields_ = (("wVk", _wt.WORD), ("wScan", _wt.WORD),
+                    ("dwFlags", _wt.DWORD), ("time", _wt.DWORD),
+                    ("dwExtraInfo", _ULONG_PTR))
+
+    class _MOUSEINPUT(_ct.Structure):
+        # Needed in the union even though we never send mouse input:
+        # MOUSEINPUT is the largest member, and SendInput validates cbSize
+        # against the full INPUT struct.
+        _fields_ = (("dx", _wt.LONG), ("dy", _wt.LONG),
+                    ("mouseData", _wt.DWORD), ("dwFlags", _wt.DWORD),
+                    ("time", _wt.DWORD), ("dwExtraInfo", _ULONG_PTR))
+
+    class _HARDWAREINPUT(_ct.Structure):
+        _fields_ = (("uMsg", _wt.DWORD), ("wParamL", _wt.WORD),
+                    ("wParamH", _wt.WORD))
+
+    class _INPUTUNION(_ct.Union):
+        _fields_ = (("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT),
+                    ("hi", _HARDWAREINPUT))
+
+    class _INPUT(_ct.Structure):
+        _fields_ = (("type", _wt.DWORD), ("union", _INPUTUNION))
+
+
+VK_SHIFT, VK_CONTROL, VK_MENU = 0x10, 0x11, 0x12
+VK_LWIN, VK_RWIN = 0x5B, 0x5C
+VK_V = 0x56
+_MODIFIER_VKS = (VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN)
+
+
+def send_key_events(events) -> bool:
+    """Inject ``events`` – a sequence of ``(vk_code, is_keyup)`` tuples – as
+    ONE SendInput batch, so no real keystroke can interleave between them.
+
+    Returns True only if every event was injected. 0 injected usually means
+    input to the foreground window is blocked (UIPI/elevation mismatch, or a
+    secure desktop is up).
+    """
+    if not IS_WINDOWS or not events:
+        return False
+    try:
+        arr = (_INPUT * len(events))()
+        for i, (vk, is_up) in enumerate(events):
+            arr[i].type = _INPUT_KEYBOARD
+            arr[i].union.ki.wVk = vk
+            arr[i].union.ki.dwFlags = _KEYEVENTF_KEYUP if is_up else 0
+        injected = _ct.windll.user32.SendInput(
+            len(events), arr, _ct.sizeof(_INPUT))
+        return injected == len(events)
+    except Exception as e:
+        print(f"[platform_helpers] SendInput failed: {e}")
+        return False
+
+
+def physically_held_modifiers() -> list:
+    """VK codes of the modifier keys the user is physically holding right
+    now (GetAsyncKeyState). Empty list off-Windows or on failure."""
+    if not IS_WINDOWS:
+        return []
+    try:
+        user32 = _ct.windll.user32
+        return [vk for vk in _MODIFIER_VKS
+                if user32.GetAsyncKeyState(vk) & 0x8000]
+    except Exception:
+        return []
+
+
+def wait_for_modifier_release(timeout_ms: int = 1000) -> bool:
+    """Block until no modifier key (Ctrl/Alt/Shift/Win) is physically held,
+    or the timeout expires. Returns True when all are up.
+
+    A synthetic Ctrl+V sent while the user still holds Alt (from the
+    Ctrl+Alt+C hotkey) arrives as Ctrl+Alt+V and most apps ignore it.
+    Waiting for the physical release – usually well under 200 ms once the
+    user has picked a clip – is more robust than injecting key-ups, because
+    a still-held key's auto-repeat immediately re-presses it.
+    """
+    if not IS_WINDOWS:
+        return True
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        if not physically_held_modifiers():
+            return True
+        time.sleep(0.015)
+    return not physically_held_modifiers()
 
 
 # ---------------------------------------------------------------------------
@@ -1152,8 +1475,16 @@ class CrossPlatformKeySender:
 
     # -- Public API ----------------------------------------------------------
 
-    def send_copy(self):
+    def send_copy(self, wait: bool = True):
         """Send Ctrl+C (or Cmd+C on macOS) to copy the current selection.
+
+        ``wait=False`` (Windows only): fire-and-forget. The AHK keystroke
+        sender is launched without blocking the calling (Qt main) thread on
+        its spawn + in-script Sleep + teardown (~150–400 ms). Callers must
+        detect the copy landing themselves – e.g. by polling
+        ``get_clipboard_sequence_number()``, as the Ctrl+Alt+C summon path
+        does. Callers that read the clipboard after a fixed delay should
+        keep the default blocking behaviour.
 
         Each platform uses a proven external mechanism:
         - Windows: AHK subprocess (or PowerShell fallback)
@@ -1161,7 +1492,7 @@ class CrossPlatformKeySender:
         - Linux: pynput Controller
         """
         if IS_WINDOWS:
-            self._send_copy_win32()
+            self._send_copy_win32(wait=wait)
         elif IS_MACOS:
             self._send_copy_macos()
         elif self._controller:
@@ -1192,7 +1523,7 @@ class CrossPlatformKeySender:
     # -- Windows-specific implementation -------------------------------------
 
     @classmethod
-    def _send_copy_win32(cls):
+    def _send_copy_win32(cls, wait: bool = True):
         """Send Ctrl+C to the foreground app on Windows.
 
         Strategy:
@@ -1201,44 +1532,76 @@ class CrossPlatformKeySender:
         """
         ahk = cls._find_ahk()
         if ahk:
-            cls._send_copy_via_ahk(ahk)
+            cls._send_copy_via_ahk(ahk, wait=wait)
         else:
             cls._send_copy_via_powershell()
 
-    @staticmethod
-    def _send_copy_via_ahk(ahk_exe: str):
-        """Run a minimal AHK script that sends Ctrl+C."""
+    # Cached static Ctrl+C script paths, keyed 'v1'/'v2'. The script content
+    # never varies, so writing a fresh temp file per invocation was pure
+    # overhead – worse, Defender re-scans a freshly WRITTEN script file at
+    # execution time, adding jittery latency to every Ctrl+Alt+C summon. A
+    # stable file is written once and reused for the process lifetime.
+    _copy_script_cache: Dict[str, str] = {}
+
+    @classmethod
+    def _get_copy_script(cls, ahk_exe: str) -> Optional[str]:
+        """Return the path of the cached Ctrl+C script for this AHK version,
+        writing it on first use. None if the file can't be created."""
+        is_v2 = 'v2' in ahk_exe.lower()
+        key = 'v2' if is_v2 else 'v1'
+        cached = cls._copy_script_cache.get(key)
+        if cached and os.path.isfile(cached):
+            return cached
+        # Sleep keeps the AHK process alive briefly after the Send so the
+        # blocking (wait=True) path retains its historical "returns after
+        # the copy has had time to land" semantics.
+        if is_v2:
+            script = '#Requires AutoHotkey v2.0\nSend "^c"\nSleep 100\n'
+        else:
+            script = 'Send, ^c\nSleep, 100\n'
         try:
-            # AHK v2 syntax: Send "^c"
-            # AHK v1 syntax: Send, ^c
-            # Detect version from path
-            is_v2 = 'v2' in ahk_exe.lower()
-            if is_v2:
-                script = 'Send "^c"\nSleep 100'
-            else:
-                script = 'Send, ^c\nSleep, 100'
-
-            # /ErrorStdOut suppresses error dialogs; we pipe the script via
-            # a temp file because AHK doesn't accept scripts on stdin reliably.
             import tempfile
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.ahk', delete=False, encoding='utf-8'
-            ) as f:
-                f.write(script + '\n')
-                tmp_path = f.name
-
-            subprocess.run(
-                [ahk_exe, '/ErrorStdOut', tmp_path],
-                timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-
-            # Clean up temp file
+            path = os.path.join(tempfile.gettempdir(),
+                                f'supervertaler_send_copy_{key}.ahk')
+            need_write = True
             try:
-                os.unlink(tmp_path)
+                with open(path, 'r', encoding='utf-8') as f:
+                    need_write = f.read() != script
             except OSError:
                 pass
+            if need_write:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(script)
+            cls._copy_script_cache[key] = path
+            return path
+        except Exception as e:
+            print(f"[CrossPlatformKeySender] copy-script cache failed: {e}")
+            return None
 
+    @classmethod
+    def _send_copy_via_ahk(cls, ahk_exe: str, wait: bool = True):
+        """Run a minimal AHK script that sends Ctrl+C.
+
+        ``wait=False`` launches AHK fire-and-forget (Popen) and returns
+        immediately – used by the Ctrl+Alt+C summon path, which detects the
+        copy landing via clipboard-sequence-number polling, so blocking the
+        Qt main thread through spawn + Sleep 100 + teardown bought nothing.
+        """
+        try:
+            script_path = cls._get_copy_script(ahk_exe)
+            if script_path is None:
+                raise OSError("copy-script cache unavailable")
+            if wait:
+                subprocess.run(
+                    [ahk_exe, '/ErrorStdOut', script_path],
+                    timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            else:
+                subprocess.Popen(
+                    [ahk_exe, '/ErrorStdOut', script_path],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
         except Exception as e:
             print(f"[CrossPlatformKeySender] AHK Ctrl+C failed: {e}")
             # Fall back to PowerShell
@@ -1260,11 +1623,21 @@ class CrossPlatformKeySender:
         except Exception as e:
             print(f"[CrossPlatformKeySender] PowerShell SendKeys failed: {e}")
 
-    def send_paste(self) -> bool:
+    def send_paste(self, hwnd=None, on_diag=None) -> bool:
         """Send Ctrl+V (or Cmd+V on macOS) to paste.
 
-        Uses the same platform-native approach as ``send_copy()``:
-        - Windows: AHK subprocess (or PowerShell fallback)
+        ``hwnd`` (Windows only): the target window handle. When given, the
+        paste path verifies that exact window is foreground (re-activating
+        and waiting if needed) immediately before injecting ^v, so the
+        keystroke can't miss on a foreground wobble. Ignored on mac/Linux.
+
+        ``on_diag`` (optional): a callable that receives a human-readable
+        diagnostic string when the paste path detects a problem (e.g. the
+        target window never became active). Falls back to ``print``.
+
+        Platform backends:
+        - Windows: in-process SendInput (legacy AHK/PowerShell only as an
+          emergency fallback – see ``_send_paste_win32``)
         - macOS: osascript (AppleScript via System Events)
         - Linux: pynput Controller
 
@@ -1276,7 +1649,7 @@ class CrossPlatformKeySender:
         should prefer ``type_text`` for those targets.
         """
         if IS_WINDOWS:
-            return self._send_paste_win32()
+            return self._send_paste_win32(hwnd, on_diag)
         elif IS_MACOS:
             return self._send_paste_macos()
         elif self._controller:
@@ -1290,8 +1663,71 @@ class CrossPlatformKeySender:
                 return False
         return False
 
-    def _send_paste_win32(self) -> bool:
-        """Send Ctrl+V on Windows via AHK or PowerShell.
+    def _send_paste_win32(self, hwnd=None, on_diag=None) -> bool:
+        """Send Ctrl+V on Windows via in-process SendInput.
+
+        Phase 1 of the clipboard-reliability work: replaces the
+        AutoHotkey-subprocess path (kept below as
+        ``_send_paste_win32_legacy``, used only if SendInput itself
+        raises). Sequence:
+
+          1. Wait (≤1 s) for physically held modifiers to be released –
+             a Ctrl+V sent while Alt is still down from the Ctrl+Alt+C
+             hotkey arrives as Ctrl+Alt+V and gets ignored. By click/
+             Enter time the keys are normally long up, so this is
+             usually a 0 ms no-op. Injected key-ups are the last resort
+             on timeout because auto-repeat re-presses a held key.
+          2. If ``hwnd`` is given and isn't foreground, re-activate and
+             poll (≤1 s) for the switch; report via ``on_diag`` if it
+             never lands, then send anyway (matches the old AHK
+             WinWaitActive behaviour – detection may be stale).
+          3. Inject Ctrl-down, V-down, V-up, Ctrl-up as ONE SendInput
+             batch so no real keystroke can interleave.
+
+        Unlike the AHK path there is no Python→subprocess hand-off gap:
+        the keystroke goes out the instant after the foreground check,
+        from the same process that performed it.
+        """
+        diag = on_diag or print
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+
+            if not wait_for_modifier_release(1000):
+                held = physically_held_modifiers()
+                if held:
+                    send_key_events([(vk, True) for vk in held])
+
+            if isinstance(hwnd, int):
+                if user32.GetForegroundWindow() != hwnd:
+                    activate_foreground_window(hwnd)
+                    deadline = time.monotonic() + 1.0
+                    while time.monotonic() < deadline:
+                        if user32.GetForegroundWindow() == hwnd:
+                            break
+                        time.sleep(0.02)
+                    if user32.GetForegroundWindow() != hwnd:
+                        diag(f"Clipboard paste: target window (hwnd={hwnd}) "
+                             f"did not become active within 1s — "
+                             f"focus/activation failure.")
+                    else:
+                        time.sleep(0.06)  # let the target restore edit focus
+
+            if send_key_events([(VK_CONTROL, False), (VK_V, False),
+                                (VK_V, True), (VK_CONTROL, True)]):
+                return True
+            diag("Clipboard paste: SendInput injected 0 events — input to "
+                 "this window is blocked (elevated target or secure "
+                 "desktop).")
+            return False
+        except Exception as e:
+            print(f"[CrossPlatformKeySender] SendInput paste failed ({e}); "
+                  f"falling back to AHK/PowerShell")
+            return self._send_paste_win32_legacy(hwnd, on_diag)
+
+    def _send_paste_win32_legacy(self, hwnd=None, on_diag=None) -> bool:
+        """LEGACY: send Ctrl+V on Windows via AHK or PowerShell. Only used
+        when the SendInput path raises unexpectedly.
 
         Hardened for cross-app reliability:
 
@@ -1326,17 +1762,40 @@ class CrossPlatformKeySender:
             try:
                 import tempfile
                 is_v2 = 'v2' in ahk.lower()
+                # Unsigned HWND string for AHK's ahk_id (ctypes may hand us a
+                # sign-extended int; AHK wants the raw unsigned handle).
+                hwnd_id = (hwnd & 0xFFFFFFFF) if isinstance(hwnd, int) else None
                 if is_v2:
+                    activate = (
+                        f'if WinExist("ahk_id {hwnd_id}") {{\n'
+                        f'    WinActivate "ahk_id {hwnd_id}"\n'
+                        f'    if !WinWaitActive("ahk_id {hwnd_id}", , 1)\n'
+                        f'        FileAppend "notactive", "*"\n'
+                        f'    Sleep 60\n'   # let the target restore edit/DOM focus
+                        f'}}\n'
+                    ) if hwnd_id else ''
                     script = (
                         '#Requires AutoHotkey v2.0\n'
                         'SendMode "Input"\n'
+                        + activate +
                         'Send "{Ctrl up}{Alt up}{Shift up}{LWin up}{RWin up}"\n'
                         'Send "^v"\n'
                         'ExitApp\n'
                     )
                 else:
+                    activate = (
+                        f'IfWinExist, ahk_id {hwnd_id}\n'
+                        f'{{\n'
+                        f'    WinActivate, ahk_id {hwnd_id}\n'
+                        f'    WinWaitActive, ahk_id {hwnd_id}, , 1\n'
+                        f'    if ErrorLevel\n'
+                        f'        FileAppend, notactive, *\n'
+                        f'    Sleep, 60\n'
+                        f'}}\n'
+                    ) if hwnd_id else ''
                     script = (
                         'SendMode Input\n'
+                        + activate +
                         'Send, {Ctrl up}{Alt up}{Shift up}{LWin up}{RWin up}\n'
                         'Send, ^v\n'
                     )
@@ -1347,16 +1806,29 @@ class CrossPlatformKeySender:
                     f.write(script)
                     tmp_path = f.name
 
-                subprocess.run(
+                result = subprocess.run(
                     [ahk, '/ErrorStdOut', tmp_path],
                     timeout=5,
                     creationflags=subprocess.CREATE_NO_WINDOW,
+                    capture_output=True,
+                    text=True,
                 )
 
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+
+                # Diagnostic: AHK writes "notactive" to stdout when the target
+                # window never became active within 1 s. If a paste fails and you
+                # see this, the problem is focus/activation; if you DON'T see it,
+                # the window was active but the app (e.g. a browser rich-text
+                # editor in an iframe) didn't route Ctrl+V to its edit field.
+                out = (result.stdout or '') + (result.stderr or '')
+                if 'notactive' in out:
+                    msg = (f"Clipboard paste: target window (hwnd={hwnd_id}) did not "
+                           f"become active within 1s — focus/activation failure.")
+                    (on_diag or print)(msg)
                 return True
             except Exception as e:
                 print(f"[CrossPlatformKeySender] AHK paste failed: {e}")

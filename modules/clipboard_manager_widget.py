@@ -633,6 +633,17 @@ class ClipboardManagerWidget(QWidget):
         self._apply_style(item, pasted)
         self._text_list.insertItem(0, item)
 
+        # Late-clip selection-follow: if this clip arrived while the list
+        # is on screen and the user hasn't navigated below the top (the
+        # typical case when a slow source app's copy lands after the
+        # summon's 250 ms floor), snap the selection to the new row 0 so
+        # Enter pastes the clip the user just copied, not the previous
+        # one. insertItem shifts a previously-selected row 0 to row 1, so
+        # current <= 1 means "was at the top, or nothing selected".
+        if save_to_db and self._text_list.isVisible() \
+                and self._text_list.currentRow() <= 1:
+            self._text_list.setCurrentRow(0)
+
         if save_to_db:
             db = self._get_db()
             if db:
@@ -665,6 +676,12 @@ class ClipboardManagerWidget(QWidget):
         item.setToolTip(label)
         self._apply_style(item, pasted)
         self._image_list.insertItem(0, item)
+
+        # Same late-clip selection-follow as _add_text_clip: a copy that
+        # lands after the summon opened should be what Enter pastes.
+        if save_to_db and self._image_list.isVisible() \
+                and self._image_list.currentRow() <= 1:
+            self._image_list.setCurrentRow(0)
 
         if save_to_db:
             db = self._get_db()
@@ -900,11 +917,13 @@ class ClipboardManagerWidget(QWidget):
     def ensure_db_loaded(self):
         if self._db_loaded:
             return
-        self._db_loaded = True
-
         db = self._get_db()
         if not db:
+            # Don't latch: the db wasn't ready yet (e.g. an early warm-up
+            # call). Stay un-loaded so a later call can still populate the
+            # history instead of silently showing an empty list forever.
             return
+        self._db_loaded = True
         try:
             # Pull both kinds; per-kind caps are enforced separately on the
             # widget side so the DB query just needs to be generous enough
@@ -1243,7 +1262,33 @@ class ClipboardManagerWidget(QWidget):
             return
         self._pending_paste_text = text
         self._suppress_next = True
-        QApplication.clipboard().setText(text)
+        # Prefer a native, materialised clipboard write (Windows): Qt's OLE
+        # clipboard hands data over via a main-thread callback, so a consumer
+        # reading while our event loop is busy gets nothing. A real Win32 copy
+        # survives regardless of our event loop. The native write retries
+        # OpenClipboard internally (contention from Win+V history / OneDrive /
+        # Trados hooks is routine) and verifies with a read-back, so a False
+        # return means the clipboard genuinely couldn't be written for ~1 s.
+        # Pasting then would deliver STALE content – abort loudly instead of
+        # falling back to the Qt clipboard, whose delayed rendering is the
+        # exact failure mode the native write exists to avoid. Qt remains the
+        # write path off-Windows.
+        try:
+            from modules.platform_helpers import IS_WINDOWS, set_clipboard_text
+            if IS_WINDOWS:
+                if not set_clipboard_text(text):
+                    self._suppress_next = False
+                    self._pending_paste_text = None
+                    self._force_typing_once = False
+                    self._paste_diag(
+                        "Clipboard write failed – another application is "
+                        "holding the clipboard. Paste cancelled; please try "
+                        "again.")
+                    return
+            else:
+                QApplication.clipboard().setText(text)
+        except Exception:
+            QApplication.clipboard().setText(text)
         self._activate_source_then_paste()
 
     def _paste_pixmap_to_source(self, pixmap):
@@ -1478,11 +1523,65 @@ class ClipboardManagerWidget(QWidget):
             except Exception as e:
                 print(f"[ClipboardManagerWidget] Paste error: {e}")
 
-        # 150ms gives the OS plenty of time to settle the foreground
-        # switch (especially on first activation after Workbench
-        # launch, where window-manager bookkeeping is slower than on
-        # subsequent activations) before the paste fires.
-        QTimer.singleShot(150, _do_paste)
+        # Fire the paste once the foreground switch has demonstrably
+        # settled, instead of after a fixed 150 ms grace. A constant
+        # delay races window-manager bookkeeping on a loaded machine
+        # (first activation after Workbench launch is notoriously
+        # slower); the poll fires as soon as the source actually owns
+        # the foreground – typically well under 150 ms – and diagnoses
+        # loudly on timeout instead of pasting into whatever happens to
+        # be focused. Windows-only (the handle is an HWND there);
+        # mac/linux handles are window titles with no cheap foreground
+        # query, so they keep the fixed grace period.
+        if isinstance(source, int):
+            self._paste_when_foreground_stable(source, _do_paste)
+        else:
+            QTimer.singleShot(150, _do_paste)
+
+    def _paste_when_foreground_stable(self, source_hwnd: int, do_paste, *,
+                                      interval_ms: int = 25,
+                                      timeout_ms: int = 1200,
+                                      stable_ticks: int = 2):
+        """Run ``do_paste`` once ``source_hwnd`` has been the foreground
+        window for ``stable_ticks`` consecutive polls, or after
+        ``timeout_ms`` with a diagnostic (the paste path retries
+        activation itself, so we still attempt the paste on timeout).
+
+        QTimer-based rather than a sleep loop so the Qt event loop keeps
+        running while we wait – the UI stays responsive and clipboard
+        reads by the target app remain serviceable.
+        """
+        from PyQt6.QtCore import QTimer
+        from modules.platform_helpers import get_foreground_window
+
+        state = {'stable': 0, 'elapsed': 0}
+        timer = QTimer(self)
+        timer.setInterval(interval_ms)
+
+        def _tick():
+            state['elapsed'] += interval_ms
+            try:
+                fg = get_foreground_window()
+            except Exception:
+                fg = None
+            state['stable'] = state['stable'] + 1 if fg == source_hwnd else 0
+
+            if state['stable'] >= stable_ticks:
+                timer.stop()
+                timer.deleteLater()
+                do_paste()
+                return
+            if state['elapsed'] >= timeout_ms:
+                timer.stop()
+                timer.deleteLater()
+                self._paste_diag(
+                    f"Clipboard paste: source window (hwnd={source_hwnd}) "
+                    f"not foreground after {timeout_ms} ms – attempting the "
+                    f"paste anyway.")
+                do_paste()
+
+        timer.timeout.connect(_tick)
+        timer.start()
 
     # ------------------------------------------------------------------
     # Paste delivery strategy
@@ -1559,6 +1658,21 @@ class ClipboardManagerWidget(QWidget):
         if paste_target_needs_elevation(source_hwnd):
             self._warn_paste_blocked_by_elevation()
 
+        # Last-moment focus guard (Windows). Between the verified activation and
+        # this keystroke there was a 150 ms wait plus Workbench's hide(); if
+        # focus drifted in that gap, re-activate the source now so the paste
+        # can't land in the wrong window or nowhere. Only runs when the source
+        # is an HWND (int); mac/linux handles are titles and are left alone.
+        try:
+            if isinstance(source_hwnd, int):
+                from modules.platform_helpers import (
+                    get_foreground_window, activate_foreground_window,
+                )
+                if get_foreground_window() != source_hwnd:
+                    activate_foreground_window(source_hwnd)
+        except Exception as e:
+            print(f"[ClipboardManagerWidget] pre-paste refocus check failed: {e}")
+
         use_typing = False
         if text is not None:  # typing is a text-only capability
             method = self._resolve_paste_method()
@@ -1574,7 +1688,31 @@ class ClipboardManagerWidget(QWidget):
             except Exception as e:
                 print(f"[ClipboardManagerWidget] type_text failed, "
                       f"falling back to Ctrl+V: {e}")
-        sender.send_paste()
+        # Pass the target HWND so AHK re-activates that exact window and waits
+        # for it to be active before sending ^v – atomic activation+keystroke,
+        # immune to a foreground wobble during the Python→AHK handoff. on_diag
+        # surfaces an activation failure into the Workbench log so a missed
+        # paste isn't a silent mystery.
+        sender.send_paste(
+            source_hwnd if isinstance(source_hwnd, int) else None,
+            on_diag=self._paste_diag,
+        )
+
+    def _paste_diag(self, msg: str):
+        """Surface a paste-path diagnostic to console + Workbench log + status bar."""
+        print(f"[ClipboardManagerWidget] {msg}")
+        app = self._parent_app
+        try:
+            if hasattr(app, 'log'):
+                app.log(f"⚠ {msg}")
+        except Exception:
+            pass
+        try:
+            sb = getattr(app, 'status_bar', None)
+            if sb is not None:
+                sb.showMessage(f"⚠ {msg}", 6000)
+        except Exception:
+            pass
 
     def _warn_paste_blocked_by_elevation(self):
         """Tell the user why a paste into an elevated window will fail.

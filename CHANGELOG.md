@@ -2,8 +2,14 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.360 (July 20, 2026)
+**Current Version:** v1.10.361 (July 20, 2026)
 
+
+## v1.10.361 – July 20, 2026
+
+### Fixed (AutoPrompt · generated prompts no longer claim segments arrive "one at a time, in isolation")
+
+- **AutoPrompt's meta-prompt described segment delivery wrongly**, so every generated prompt told the translator AI it receives *"one segment at a time, in isolation"* – but Batch Translate/Proofread actually send **numbered batches** of segments (your *Batch size* setting). The generated prompts therefore forbade using context the AI could legitimately see, and left terminology "choices" open that can't stay consistent across batches. The template now describes batched delivery correctly: translate every delivered segment and keep count/order aligned; in-batch context (e.g. a nearby antecedent) **may** be used; batch boundaries are arbitrary, so document-wide checks belong to a QA pass; there is no memory between requests, so the prompt must **lock** every recurring term (no open "X or Y" choices); and ⟦TC: …⟧ correction markers stay attached to their own segment, never pooled at the end of a batch. Existing AutoPrompt-generated prompts in your library keep the old wording – regenerate the ones you rely on. (Same fix as Supervertaler for Trados v18/19.20.109 – the two products share this template.)
 
 ## v1.10.360 – July 20, 2026
 

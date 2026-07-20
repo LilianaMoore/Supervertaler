@@ -768,7 +768,7 @@ DOMAIN_TEMPLATES = {
             'TRANSLATION MANDATE (NON-NEGOTIABLE) – pure translation only, explicitly forbid improvement, simplification, harmonization, correction, streamlining',
             'HARD CONSTRAINT: NO HALLUCINATED TRUNCATION – never omit repetitive phrases, collapse clauses, shorten lists, simplify enumerations, or "fix" grammar',
             'CORE EXECUTION PRINCIPLES – with ABSOLUTE REQUIREMENTS (checkmarks) and ABSOLUTE PROHIBITIONS (crosses)',
-            'SUPERVERTALER INPUT HANDLING – translate only provided segment, preserve exact order, do not rely on unseen context',
+            'SUPERVERTALER INPUT HANDLING – batched segment delivery: translate every delivered segment, keep count/order/boundaries aligned, use only in-batch context',
             'TRANSLATION STYLE (LOCKED) – mandatory term mappings (omvattende>comprising, waarbij>wherein, met het kenmerk dat>characterized in that, conclusie>claim, stand der techniek>prior art, uitvoeringsvorm>embodiment, bij voorkeur>preferably, inrichting>device, werkwijze>method)',
             'CLAIM TRANSLATION STYLE – preserve dependency structure, maintain "according to any one of the preceding claims" phrasing, avoid stylistic smoothing',
             'GERUND STYLE RULE – prefer natural English gerund over "the [verb]ing of" construction',
@@ -5407,8 +5407,10 @@ If the text refers to figures (e.g., 'Figure 1A'), relevant images may be provid
         prompt = f"""You are a prompt engineering specialist for professional translation. Your task is to generate
 a comprehensive, expert-level translation prompt and save it using the ACTION system.
 
-This prompt will be used in Supervertaler, a CAT (Computer-Assisted Translation) tool that sends text
-segment by segment. The prompt must account for this segment-by-segment delivery.
+This prompt will be used in Supervertaler, a CAT (Computer-Assisted Translation) tool. Supervertaler
+delivers the source text as NUMBERED BATCHES of segments (typically dozens of segments per request;
+in some contexts a single segment). The prompt must account for this batched, segment-numbered
+delivery - do NOT describe delivery as "one segment at a time" or "in isolation".
 
 === ANALYSIS RESULTS ===
 DETECTED DOMAIN: {detected_domain.upper()}
@@ -5535,14 +5537,22 @@ SPECIAL DOMAIN INSTRUCTIONS:
    default to literal surface structure – never interpretation."
 
 3. SUPERVERTALER INPUT HANDLING:
-   "Text is supplied in controlled segments by Supervertaler. You must: translate only the provided
-   segment, preserve exact order, not rely on unseen context, not reconstruct missing structure.
-   If a segment appears incomplete, translate exactly what is provided without comment."
+   "Supervertaler delivers the source text as a numbered batch of segments (in some contexts a
+   single segment). You must: translate EVERY delivered segment, keep segment count and order
+   exactly aligned with the input, and preserve segment boundaries. You MAY use context visible
+   within the delivered batch (e.g. resolving an antecedent that appears a few segments earlier),
+   but batch boundaries are arbitrary: never assume the batch is the whole document, and leave
+   document-wide checks (e.g. reference-numeral consistency across the full text) to a separate
+   QA pass. There is no memory between requests, so terminology must come from the termbase and
+   reference translations below - never from choices made in an earlier batch. If a segment
+   appears incomplete, translate exactly what is provided without comment."
 
 4. TERMINOLOGY CONSISTENCY HIERARCHY:
    "(1) Previous correct translations from TM (highest priority), (2) Project-specific termbase terms
    (LOCKED), (3) Domain-specific conventions, (4) General language knowledge. Never mix competing
-   variants once established."
+   variants once established. Because there is no memory between batches, the prompt itself must
+   LOCK every recurring term to a single translation - never leave an open choice ('X or Y') for
+   the translator AI to resolve, as consistency cannot carry across batches."
 
 5. PREFLIGHT SELF-CHECK (MANDATORY INTERNAL STEP):
    "Before producing output, internally verify: every word and clause translated, no compression or
@@ -5645,6 +5655,8 @@ the very end of the segment, in this exact format:
 - The marker is the FINAL content of the segment, separated from the running
   text by exactly one regular space, with no line break, no full stop, and no
   other punctuation between.
+- Markers attach to THEIR OWN segment's end. Never pool markers at the end of
+  the batch or response - each fix stays with the segment it describes.
 
 **What the methodology MUST NOT silently correct** (the generated prompt MUST
 state these as hard exclusions, regardless of domain):

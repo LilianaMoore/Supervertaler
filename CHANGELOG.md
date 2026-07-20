@@ -2,7 +2,16 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.354 (July 20, 2026)
+**Current Version:** v1.10.355 (July 20, 2026)
+
+
+## v1.10.355 – July 20, 2026
+
+### Fixed (Term extraction: capitalised terms were never recognised)
+
+- **Product names and other proper nouns now rank where they should in term extraction.** The extractor gave capitalised candidates a scoring bonus and a "proper noun" classification, but neither could ever apply: the text was lowercased before candidates were built, so the capitalisation test always failed. Terms like `Falcon Gold` scored no higher than any ordinary recurring phrase, and every extracted term arrived in lower case.
+- **Casing is now preserved rather than discarded.** Candidates are still counted case-insensitively – `System` and `system` remain a single term with a combined count, not two competitors – but each is displayed using whichever spelling is most common in the source text.
+- **Sentence-initial words are not mistaken for proper nouns.** Where a term appears capitalised as often as not, the lower-case form wins, and the capitalisation bonus applies only when *every* word of a term is capitalised. Without those two rules, making the bonus live would have promoted any phrase starting a sentence.
 
 
 ## v1.10.354 – July 20, 2026

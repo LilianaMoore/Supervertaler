@@ -88,14 +88,14 @@ class TermExtractor:
         # Extract n-grams (1 to max_ngram)
         for n in range(1, self.max_ngram + 1):
             ngrams = self._extract_ngrams(text, n)
-            for ngram, freq in ngrams.items():
-                if ngram not in candidates:
-                    candidates[ngram] = {
-                        'term': ngram,
+            for key, (freq, surface) in ngrams.items():
+                if key not in candidates:
+                    candidates[key] = {
+                        'term': surface,
                         'frequency': freq,
                         'ngram_size': n,
-                        'is_capitalized': ngram[0].isupper() if ngram else False,
-                        'has_special_chars': bool(re.search(r'[-_./]', ngram))
+                        'is_capitalized': self._is_capitalized(surface),
+                        'has_special_chars': bool(re.search(r'[-_./]', surface))
                     }
         
         # Score and rank terms
@@ -121,31 +121,66 @@ class TermExtractor:
         
         return scored_terms
     
-    def _extract_ngrams(self, text: str, n: int) -> Dict[str, int]:
-        """Extract n-grams from text"""
-        # Tokenize text into words
-        words = re.findall(r'\b[\w-]+\b', text.lower())
-        
+    def _extract_ngrams(self, text: str, n: int) -> Dict[str, Tuple[int, str]]:
+        """Extract n-grams from text
+
+        Candidates are counted case-insensitively, so "System" and "system" are
+        the same candidate, but the original surface forms are kept so that the
+        most common one can be used for display and capitalisation detection.
+
+        Returns:
+            Mapping of lowercased n-gram -> (frequency, most common surface form)
+        """
+        # Tokenize text into words, preserving the original casing
+        words = re.findall(r'\b[\w-]+\b', text)
+
         # Generate n-grams
-        ngrams = []
+        frequencies = Counter()
+        surface_forms: Dict[str, Counter] = {}
         for i in range(len(words) - n + 1):
             ngram_words = words[i:i+n]
-            
+
             # Skip if contains stop words (except for longer n-grams where they might be acceptable)
-            if n == 1 and ngram_words[0] in self.stop_words:
+            if n == 1 and ngram_words[0].lower() in self.stop_words:
                 continue
-            
+
             # Skip if too short
             if n == 1 and len(ngram_words[0]) < self.min_word_length:
                 continue
-            
+
             # Create n-gram string
-            ngram = ' '.join(ngram_words)
-            ngrams.append(ngram)
-        
-        # Count frequencies
-        return dict(Counter(ngrams))
-    
+            surface = ' '.join(ngram_words)
+            key = surface.lower()
+            frequencies[key] += 1
+            surface_forms.setdefault(key, Counter())[surface] += 1
+
+        # Count frequencies, pairing each with its preferred surface form
+        return {
+            key: (freq, self._preferred_surface_form(surface_forms[key]))
+            for key, freq in frequencies.items()
+        }
+
+    @staticmethod
+    def _preferred_surface_form(forms: Counter) -> str:
+        """Pick the surface form to display for a candidate
+
+        The most frequent form wins. Ties go to the least capitalised form, so a
+        word that merely happens to start a sentence is not mistaken for a
+        proper noun.
+        """
+        def rank(item: Tuple[str, int]) -> Tuple[int, int, str]:
+            form, count = item
+            capitals = sum(1 for word in form.split() if word[:1].isupper())
+            return (-count, capitals, form)
+
+        return min(forms.items(), key=rank)[0]
+
+    @staticmethod
+    def _is_capitalized(term: str) -> bool:
+        """True when every word of the term starts with an uppercase letter"""
+        words = term.split()
+        return bool(words) and all(word[:1].isupper() for word in words)
+
     def _calculate_score(self, term_info: Dict, use_frequency: bool,
                         use_capitalization: bool, use_special_chars: bool) -> float:
         """Calculate term score based on various factors"""

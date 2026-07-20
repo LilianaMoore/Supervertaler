@@ -21604,7 +21604,7 @@ class SupervertalerQt(QMainWindow):
         
         cancel_btn = QPushButton(self.tr("Cancel"))
         
-        def create_project_termbase():
+        def _do_create_project_termbase():
             """Create project termbase with selected terms"""
             if not extracted_terms:
                 QMessageBox.warning(dialog, "Error", "Please extract terms first")
@@ -21622,11 +21622,15 @@ class SupervertalerQt(QMainWindow):
                 return
             
             # Ask for termbase name
+            # current_project is a Project object, not a dict — .get() raised
+            # AttributeError here and, because Qt swallows exceptions in a click
+            # slot, the button appeared to do nothing.
+            project_name = getattr(self.current_project, 'name', None) or 'Project'
             name, ok = QInputDialog.getText(
                 dialog,
                 "Termbase Name",
                 "Enter name for project termbase:",
-                text=f"{self.current_project.get('name', 'Project')} Terminology"
+                text=f"{project_name} Terminology"
             )
             
             if not ok or not name.strip():
@@ -21672,7 +21676,21 @@ class SupervertalerQt(QMainWindow):
                 self.termbase_cache.clear()
             refresh_callback()
             dialog.accept()
-        
+
+        def create_project_termbase():
+            """Guarded entry point for the Create Project Termbase button.
+
+            Qt discards exceptions raised inside a click slot, so an error here
+            would otherwise leave the button looking inert. Surface it instead.
+            """
+            try:
+                _do_create_project_termbase()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(dialog, "Error", f"Failed to create termbase: {str(e)}")
+                self.log(f"✗ Create project termbase failed: {e}")
+
         create_btn.clicked.connect(create_project_termbase)
         cancel_btn.clicked.connect(dialog.reject)
         

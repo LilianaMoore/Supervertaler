@@ -2,7 +2,16 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.355 (July 20, 2026)
+**Current Version:** v1.10.356 (July 20, 2026)
+
+
+## v1.10.356 – July 20, 2026
+
+### Fixed (Term extraction: "Create Project Termbase" did nothing, and results were mostly noise)
+
+- **"Create Project Termbase" now works.** After extracting terms and clicking it, nothing happened – no termbase, no error. The handler asked the current project for its name with a dictionary call (`.get()`) that a project object does not support, and, as with the earlier extraction bugs, the resulting error was discarded because it happened inside a button click. The button now reads the project name correctly, and any unexpected error in this dialogue is reported rather than swallowed.
+- **Extraction no longer floods the results with function-word phrases.** The ranking was topped by items like "van het", "tussen de" and "aan laterale zijden": stop words were only filtered from single-word candidates, so multi-word phrases built almost entirely from common words slipped through – and then scored *higher*, because longer candidates receive a length bonus. Candidates that begin or end with a common word are now rejected, while the useful part ("laterale zijden") is still captured on its own. Interior common words are kept, so a genuine phrase such as "risico op letsel" survives.
+- **The Dutch stop-word list has been broadened** with the prepositions, conjunctions and relative words (for example "tussen", "waarbij", "zonder") that most often bracket these noise phrases in technical Dutch.
 
 
 ## v1.10.355 – July 20, 2026

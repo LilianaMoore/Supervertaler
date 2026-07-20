@@ -49,7 +49,15 @@ class TermExtractor:
                    'van', 'met', 'bij', 'uit', 'als', 'is', 'was', 'zijn', 'waren', 'wordt',
                    'worden', 'werd', 'werden', 'hebben', 'heeft', 'had', 'hadden', 'zal',
                    'zou', 'kunnen', 'kan', 'moet', 'mag', 'dit', 'dat', 'deze', 'die',
-                   'ik', 'je', 'jij', 'hij', 'zij', 'het', 'wij', 'ze'},
+                   'ik', 'je', 'jij', 'hij', 'zij', 'het', 'wij', 'ze',
+                   # Prepositions, conjunctions and relatives that commonly
+                   # bound noise phrases in technical Dutch (patents etc.)
+                   'tussen', 'door', 'over', 'onder', 'naar', 'om', 'tot', 'na',
+                   'tijdens', 'binnen', 'buiten', 'tegen', 'volgens', 'zonder',
+                   'waarbij', 'waarin', 'waardoor', 'waarvan', 'waarop', 'waaraan',
+                   'hierbij', 'daarbij', 'zodat', 'omdat', 'terwijl', 'indien',
+                   'dan', 'ook', 'nog', 'wel', 'niet', 'geen', 'dus', 'want',
+                   'welke', 'welk', 'hun', 'haar', 'ons', 'onze', 'men', 'u'},
             'de': {'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'einem',
                    'einen', 'eines', 'und', 'oder', 'aber', 'in', 'an', 'auf', 'zu', 'für',
                    'von', 'mit', 'bei', 'aus', 'als', 'ist', 'war', 'sind', 'waren', 'wird',
@@ -140,8 +148,15 @@ class TermExtractor:
         for i in range(len(words) - n + 1):
             ngram_words = words[i:i+n]
 
-            # Skip if contains stop words (except for longer n-grams where they might be acceptable)
-            if n == 1 and ngram_words[0].lower() in self.stop_words:
+            # A term must not begin or end with a function word. For single
+            # words this rejects stop words outright; for phrases it trims the
+            # "van het", "aan de", "... en" noise that otherwise dominates the
+            # ranking – doubly so because a multi-word candidate also collects
+            # the length bonus. Interior stop words are kept, so genuine terms
+            # like "risico op letsel" survive.
+            if ngram_words[0].lower() in self.stop_words:
+                continue
+            if ngram_words[-1].lower() in self.stop_words:
                 continue
 
             # Skip if too short

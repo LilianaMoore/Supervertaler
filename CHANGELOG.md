@@ -2,7 +2,15 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.357 (July 20, 2026)
+**Current Version:** v1.10.358 (July 20, 2026)
+
+
+## v1.10.358 – July 20, 2026
+
+### Changed (Term extraction: existing project termbase no longer blocks saving)
+
+- **Creating a termbase from AI extraction results no longer fails when the project already has a project termbase.** Previously the whole flow – AI call, review, edits – ended in a hard error at the last step. Now a dialogue asks what to do: make the new termbase the project termbase (the existing one is kept, demoted to a regular termbase), save the new one as a regular termbase alongside, or cancel. Nothing is deleted in any case.
+- The "Asking the AI model…" notice now says large projects can take a minute or more, instead of promising "a few seconds".
 
 
 ## v1.10.357 – July 20, 2026

@@ -21541,7 +21541,7 @@ class SupervertalerQt(QMainWindow):
         extract_row = QHBoxLayout()
         extract_btn = QPushButton(self.tr("🤖 Extract Terms with AI"))
         extract_btn.setMaximumWidth(200)
-        busy_label = QLabel(self.tr("Asking the AI model… this takes a few seconds."))
+        busy_label = QLabel(self.tr("Asking the AI model… large projects can take a minute or more."))
         busy_label.setVisible(False)
         extract_row.addWidget(extract_btn)
         extract_row.addWidget(busy_label)
@@ -21763,8 +21763,33 @@ class SupervertalerQt(QMainWindow):
             
             if not ok or not name.strip():
                 return
-            
-            # Create termbase (bilingual – targets come from the AI extraction)
+
+            # If the project already has a project termbase, don't refuse at
+            # the end of the whole flow (extraction + review is work the user
+            # shouldn't lose) – ask whether the new termbase should take over
+            # the project-termbase role or be saved alongside as a regular one.
+            make_project_tb = True
+            existing_ptb = termbase_mgr.get_project_termbase(project_id)
+            if existing_ptb:
+                choice = QMessageBox.question(
+                    dialog,
+                    self.tr("Project Termbase Exists"),
+                    self.tr("This project's termbase is currently '{0}'.\n\n"
+                            "Make the new termbase '{1}' the project termbase instead?\n\n"
+                            "• Yes – '{1}' becomes the project termbase; '{0}' is kept as a regular termbase\n"
+                            "• No – save '{1}' as a regular termbase; '{0}' stays the project termbase\n"
+                            "• Cancel – go back (nothing is saved)").format(existing_ptb['name'], name.strip()),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Yes
+                )
+                if choice == QMessageBox.StandardButton.Cancel:
+                    return
+                make_project_tb = (choice == QMessageBox.StandardButton.Yes)
+
+            # Create termbase (bilingual – targets come from the AI extraction).
+            # Always created with is_project_termbase=False so the manager's
+            # one-per-project guard can't refuse; the role is assigned after
+            # via set_as_project_termbase, which demotes the old one atomically.
             source_lang = source_lang_edit.text().strip() or 'en'
             target_lang = target_lang_edit.text().strip() or None
             tb_id = termbase_mgr.create_termbase(
@@ -21774,12 +21799,15 @@ class SupervertalerQt(QMainWindow):
                 project_id=project_id,
                 description=f"AI-extracted glossary from project segments ({len(selected)} term pairs)",
                 is_global=False,
-                is_project_termbase=True
+                is_project_termbase=False
             )
 
             if not tb_id:
-                QMessageBox.critical(dialog, "Error", "Failed to create termbase. There may already be a project termbase for this project.")
+                QMessageBox.critical(dialog, "Error", "Failed to create termbase.")
                 return
+
+            if make_project_tb:
+                termbase_mgr.set_as_project_termbase(tb_id, project_id)
 
             # Add term pairs (target may be empty where the AI was unsure)
             added = 0
@@ -21792,11 +21820,14 @@ class SupervertalerQt(QMainWindow):
                 if success:
                     added += 1
             
-            self.log(f"✓ Created project termbase '{name}' with {added} terms")
+            role = "project termbase" if make_project_tb else "termbase"
+            self.log(f"✓ Created {role} '{name}' with {added} terms")
             QMessageBox.information(
                 dialog,
                 "Success",
-                f"Project termbase '{name}' created with {added} terms!"
+                self.tr("{0} '{1}' created with {2} term pairs!").format(
+                    "Project termbase" if make_project_tb else "Termbase",
+                    name, added)
             )
             
             # Clear cache and refresh

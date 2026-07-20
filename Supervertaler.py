@@ -21561,6 +21561,30 @@ class SupervertalerQt(QMainWindow):
         results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         results_table.setVisible(False)
 
+        # Right-click: tick/untick all currently selected rows at once
+        def show_results_context_menu(pos):
+            selected_rows = sorted({idx.row() for idx in results_table.selectedIndexes()})
+            if not selected_rows:
+                return
+
+            def set_checked(state):
+                for r in selected_rows:
+                    check_item = results_table.item(r, 0)
+                    if check_item:
+                        check_item.setCheckState(state)
+
+            menu = QMenu(results_table)
+            untick_action = QAction(self.tr("Untick selected ({0})").format(len(selected_rows)), menu)
+            untick_action.triggered.connect(lambda: set_checked(Qt.CheckState.Unchecked))
+            menu.addAction(untick_action)
+            tick_action = QAction(self.tr("Tick selected ({0})").format(len(selected_rows)), menu)
+            tick_action.triggered.connect(lambda: set_checked(Qt.CheckState.Checked))
+            menu.addAction(tick_action)
+            menu.exec(results_table.viewport().mapToGlobal(pos))
+
+        results_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        results_table.customContextMenuRequested.connect(show_results_context_menu)
+
         results_label = QLabel(self.tr("Extracted terms will appear here"))
         results_label.setVisible(False)
 
@@ -21807,7 +21831,15 @@ class SupervertalerQt(QMainWindow):
                 return
 
             if make_project_tb:
+                # Two parallel "project termbase" representations exist and
+                # BOTH must be set or the Termbases tab won't reflect the
+                # promotion: the legacy is_project_termbase flag on the
+                # termbases row (what create/get_project_termbase check), and
+                # the activation-based one the tab actually displays – an
+                # activation record (Read) plus priority=1 (pink Project ✓).
                 termbase_mgr.set_as_project_termbase(tb_id, project_id)
+                termbase_mgr.activate_termbase(tb_id, project_id)
+                termbase_mgr.set_termbase_priority(tb_id, project_id, 1)
 
             # Add term pairs (target may be empty where the AI was unsure)
             added = 0

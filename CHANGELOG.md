@@ -2,7 +2,18 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.358 (July 20, 2026)
+**Current Version:** v1.10.359 (July 20, 2026)
+
+
+## v1.10.359 – July 20, 2026
+
+### Added (Term extraction: bulk tick/untick)
+
+- **Right-click in the extraction results table to tick or untick all selected rows at once.** Select multiple rows (Shift/Ctrl+click as usual), right-click, and choose "Untick selected" or "Tick selected" – no more clicking checkboxes one by one.
+
+### Fixed (Term extraction: promoted termbase now shows as Project termbase in the Termbases tab)
+
+- **Choosing "make this the project termbase" now actually shows up in the Termbases tab.** Two separate representations of "project termbase" exist internally – a flag on the termbase itself and the activation-based one the Termbases tab displays (Read + pink Project tick). The extraction dialogue only set the former, so a promoted termbase looked like nothing had happened. It now sets both: the new termbase arrives activated (Read) and marked as the Project termbase (pink ✓).
 
 
 ## v1.10.358 – July 20, 2026

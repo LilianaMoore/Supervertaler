@@ -2,7 +2,16 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.351 (July 16, 2026)
+**Current Version:** v1.10.352 (July 20, 2026)
+
+
+## v1.10.352 – July 20, 2026
+
+### Fixed (Termbases: "🔍 Extract Terms" was permanently greyed out)
+
+- **Term extraction is reachable again.** The **🔍 Extract Terms** button on the Termbases tab was disabled for every user in every session, so the whole term-extraction feature was unusable no matter what you did. The Termbases tab is built once during start-up, before any project exists, and the button's enabled state was computed at that moment from a project id that was therefore always empty – and never recalculated when a project was later opened. Opening a project appeared to do nothing.
+- The button now stays enabled and resolves the current project when you click it, rather than relying on the value captured at start-up. The same stale value was also being handed to the extraction dialogue, so the dialogue would have received an empty project id even if the button had somehow been enabled.
+- Clicking it with no project open now explains that a project is needed, instead of doing nothing.
 
 
 ## v1.10.351 – July 16, 2026

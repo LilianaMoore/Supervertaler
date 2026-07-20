@@ -21232,8 +21232,15 @@ class SupervertalerQt(QMainWindow):
         
         extract_btn = QPushButton(self.tr("🔍 Extract Terms"))
         extract_btn.setToolTip(self.tr("Extract terminology from project segments to create project termbase"))
-        extract_btn.setEnabled(project_id is not None)  # Only enabled when project is loaded
-        extract_btn.clicked.connect(lambda: self._show_term_extraction_dialog(termbase_mgr, refresh_termbase_list, project_id))
+        # The tab is built once at startup, before any project exists, so the
+        # enabled state must NOT be derived from the project_id captured above
+        # (it is always None here and was never refreshed, leaving the button
+        # permanently greyed out). Resolve the project live on click instead.
+        extract_btn.clicked.connect(lambda: self._show_term_extraction_dialog(
+            termbase_mgr,
+            refresh_termbase_list,
+            getattr(getattr(self, 'current_project', None), 'id', None)
+        ))
         button_layout.addWidget(extract_btn)
         
         import_btn = QPushButton(self.tr("📥 Import"))
@@ -21356,7 +21363,16 @@ class SupervertalerQt(QMainWindow):
     def _show_term_extraction_dialog(self, termbase_mgr, refresh_callback, project_id):
         """Show dialog to extract terms from project segments"""
         from modules.term_extractor import TermExtractor
-        
+
+        if project_id is None:
+            QMessageBox.information(
+                self,
+                self.tr("No Project Open"),
+                self.tr("Open a project first – term extraction reads the source "
+                        "segments of the current project.")
+            )
+            return
+
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Extract Terms from Project"))
         dialog.setMinimumWidth(800)

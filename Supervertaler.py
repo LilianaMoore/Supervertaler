@@ -21474,7 +21474,7 @@ class SupervertalerQt(QMainWindow):
         
         extracted_terms = []
         
-        def extract_terms():
+        def _do_extract_terms():
             """Extract terms and populate results table"""
             # Get source text
             if use_project_radio.isChecked():
@@ -21483,17 +21483,20 @@ class SupervertalerQt(QMainWindow):
                     QMessageBox.warning(dialog, "Error", "No project is currently loaded")
                     return
                 
+                # Read from the project's segment list, not from grid widgets:
+                # self.grid_widget has never existed on this class, so the old
+                # cellWidget() walk raised AttributeError inside the click slot
+                # and the button silently did nothing.
                 segments = []
-                for i in range(self.grid_widget.grid.rowCount()):
-                    source_widget = self.grid_widget.grid.cellWidget(i, self.grid_widget.source_col)
-                    if source_widget:
-                        text = source_widget.toPlainText().strip()
-                        # v1.9.306: Strip invisible character markers before term extraction
-                        if hasattr(self, 'reverse_invisible_replacements'):
-                            text = self.reverse_invisible_replacements(text).strip()
-                        if text:
-                            segments.append(text)
-                
+                for seg in self.current_project.segments:
+                    text = strip_all_tags(seg.source) if seg.source else ""
+                    # v1.9.306: Strip invisible character markers before term extraction
+                    if text and hasattr(self, 'reverse_invisible_replacements'):
+                        text = self.reverse_invisible_replacements(text)
+                    text = text.strip()
+                    if text:
+                        segments.append(text)
+
                 if not segments:
                     QMessageBox.warning(dialog, "Error", "No source segments found in project")
                     return
@@ -21557,7 +21560,22 @@ class SupervertalerQt(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(dialog, "Error", f"Failed to extract terms: {str(e)}")
                 self.log(f"✗ Term extraction failed: {e}")
-        
+
+        def extract_terms():
+            """Guarded entry point for the Extract Terms button.
+
+            Qt swallows exceptions raised inside a click slot, which is how a
+            stale attribute reference made this button look completely dead
+            rather than reporting an error. Surface anything that escapes.
+            """
+            try:
+                _do_extract_terms()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(dialog, "Error", f"Term extraction failed: {str(e)}")
+                self.log(f"✗ Term extraction failed: {e}")
+
         extract_btn.clicked.connect(extract_terms)
         
         # Buttons

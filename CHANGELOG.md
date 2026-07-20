@@ -2,7 +2,16 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.352 (July 20, 2026)
+**Current Version:** v1.10.353 (July 20, 2026)
+
+
+## v1.10.353 – July 20, 2026
+
+### Fixed (Termbases: "Extract Terms" inside the extraction dialogue did nothing)
+
+- **Term extraction now actually runs.** With the dialogue open and "Use project segments" selected, pressing **🔍 Extract Terms** did nothing at all – no results, no error. It was reading source text by walking grid cell widgets via `self.grid_widget`, an attribute that does not exist on the main window, so the click handler raised `AttributeError` before it reached the extractor. Qt discards exceptions thrown inside a click handler, so the button looked inert.
+- Source text is now read from the project's segment list, with inline tags stripped, which is also what the rest of the application uses.
+- **Errors in this dialogue are no longer silent.** Anything unexpected during extraction now reports itself instead of leaving a dead-looking button, so a failure of this kind cannot hide again.
 
 
 ## v1.10.352 – July 20, 2026

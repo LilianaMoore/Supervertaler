@@ -583,23 +583,6 @@ class DatabaseManager:
             # Column already exists, ignore
             pass
 
-        # Data Migration: Set is_project_termbase=1 for termbases with non-NULL project_id
-        # This ensures existing project termbases are correctly flagged
-        try:
-            self.cursor.execute("""
-                UPDATE termbases
-                SET is_project_termbase = 1
-                WHERE project_id IS NOT NULL
-                AND (is_project_termbase IS NULL OR is_project_termbase = 0)
-            """)
-            updated_count = self.cursor.rowcount
-            if updated_count > 0:
-                self.log(f"✅ Data migration: Updated {updated_count} project termbase(s) with is_project_termbase=1")
-            self.connection.commit()
-        except Exception as e:
-            self.log(f"⚠️ Data migration warning (is_project_termbase): {e}")
-            pass
-
         # Legacy support: create glossaries as alias for termbases
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS glossaries (
@@ -634,7 +617,42 @@ class DatabaseManager:
         except Exception:
             # Column already exists, ignore
             pass
-        
+
+        # Data repair (v1.10.360): clear stale is_project_termbase flags.
+        #
+        # Until v1.10.359 a startup migration (formerly above, next to the
+        # termbases table) flagged EVERY project-scoped termbase as "the
+        # project termbase", conflating project-scoped with the
+        # project-termbase role and silently desynchronising the legacy flag
+        # from the authoritative representation
+        # (termbase_activation.priority = 1, which is what the Termbases tab
+        # displays and matching ranks by). Result: term extraction refused to
+        # create a project termbase "because one already exists" while the
+        # UI showed none.
+        #
+        # That migration is gone; this repair clears any flag that has no
+        # backing priority=1 activation row anywhere. Idempotent — normally
+        # updates 0 rows. Flags that DO match a priority=1 row are kept in
+        # sync by TermbaseManager.set_termbase_priority (the single write
+        # path for the project-termbase role).
+        try:
+            self.cursor.execute("""
+                UPDATE termbases
+                SET is_project_termbase = 0
+                WHERE is_project_termbase = 1
+                AND id NOT IN (
+                    SELECT termbase_id FROM termbase_activation
+                    WHERE priority = 1 AND is_active = 1
+                )
+            """)
+            updated_count = self.cursor.rowcount
+            if updated_count > 0:
+                self.log(f"✅ Data repair: cleared stale is_project_termbase flag on {updated_count} termbase(s)")
+            self.connection.commit()
+        except Exception as e:
+            self.log(f"⚠️ Data repair warning (is_project_termbase): {e}")
+            pass
+
         # Legacy support: termbase_project_activation as alias
         # Note: Foreign key now references termbases for consistency with Qt version
         self.cursor.execute("""
@@ -2589,14 +2607,14 @@ class DatabaseManager:
                 tb.name as termbase_name,
                 tb.source_lang as termbase_source_lang,
                 tb.target_lang as termbase_target_lang,
-                tb.is_project_termbase,
-                CASE WHEN COALESCE(ta.priority, 0) = 1 OR tb.is_project_termbase = 1 THEN 1 ELSE 0 END as ranking,
+                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as is_project_termbase,
+                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as ranking,
                 'source' as match_direction
             FROM termbase_terms t
             LEFT JOIN termbases tb ON CAST(t.termbase_id AS INTEGER) = tb.id
             LEFT JOIN termbase_activation ta ON ta.termbase_id = tb.id AND ta.project_id = ? AND ta.is_active = 1
             WHERE {match_conditions}
-            AND (ta.is_active = 1 OR tb.is_project_termbase = 1)
+            AND ta.is_active = 1
         """.format(match_conditions=build_match_conditions('source_term'))
 
         # Base SELECT for reverse matches (target_term matches) - swap source/target in output
@@ -2610,14 +2628,14 @@ class DatabaseManager:
                 tb.name as termbase_name,
                 tb.target_lang as termbase_source_lang,
                 tb.source_lang as termbase_target_lang,
-                tb.is_project_termbase,
-                CASE WHEN COALESCE(ta.priority, 0) = 1 OR tb.is_project_termbase = 1 THEN 1 ELSE 0 END as ranking,
+                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as is_project_termbase,
+                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as ranking,
                 'target' as match_direction
             FROM termbase_terms t
             LEFT JOIN termbases tb ON CAST(t.termbase_id AS INTEGER) = tb.id
             LEFT JOIN termbase_activation ta ON ta.termbase_id = tb.id AND ta.project_id = ? AND ta.is_active = 1
             WHERE {match_conditions}
-            AND (ta.is_active = 1 OR tb.is_project_termbase = 1)
+            AND ta.is_active = 1
         """.format(match_conditions=build_match_conditions('target_term'))
 
         # Build params

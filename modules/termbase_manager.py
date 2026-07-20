@@ -72,28 +72,36 @@ class TermbaseManager:
         try:
             cursor = self.db_manager.cursor
             now = datetime.now().isoformat()
-            
-            # If this is a project termbase, check if one already exists for this project
+
+            # If this is a project termbase, check if one already exists for
+            # this project. v1.10.360: the check is activation-based
+            # (priority=1) — the same definition the Termbases tab displays —
+            # not the legacy is_project_termbase flag, which used to drift out
+            # of sync and refuse creation for termbases the UI showed as
+            # having no project role.
             if is_project_termbase and project_id:
-                cursor.execute("""
-                    SELECT id, name FROM termbases 
-                    WHERE project_id = ? AND is_project_termbase = 1
-                """, (project_id,))
-                existing = cursor.fetchone()
+                existing = self.get_project_termbase(project_id)
                 if existing:
-                    self.log(f"✗ Project {project_id} already has a project termbase: {existing[1]}")
+                    self.log(f"✗ Project {project_id} already has a project termbase: {existing['name']}")
                     return None
-            
+
+            # The legacy flag column is always inserted as 0; the project
+            # termbase role is assigned below through the single write path
+            # (set_termbase_priority), which keeps flag and activation in sync.
             cursor.execute("""
-                INSERT INTO termbases (name, source_lang, target_lang, project_id, 
+                INSERT INTO termbases (name, source_lang, target_lang, project_id,
                                       description, is_global, is_project_termbase, created_date, modified_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (name, source_lang, target_lang, project_id, description, is_global, is_project_termbase, now, now))
-            
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+            """, (name, source_lang, target_lang, project_id, description, is_global, now, now))
+
             self.db_manager.connection.commit()
             termbase_id = cursor.lastrowid
             tb_type = "project termbase" if is_project_termbase else "termbase"
             self.log(f"✓ Created {tb_type}: {name} (ID: {termbase_id})")
+
+            if is_project_termbase and project_id:
+                self.set_termbase_priority(termbase_id, project_id, 1)
+
             return termbase_id
         except Exception as e:
             self.log(f"✗ Error creating termbase: {e}")
@@ -625,6 +633,21 @@ class TermbaseManager:
         Set a termbase as Project glossary (priority=1) or Background (priority=None).
         Only one termbase can be the Project glossary per project (exclusive).
 
+        v1.10.360: this is the SINGLE write path for the project-termbase
+        role. ``termbase_activation.priority = 1`` (with ``is_active = 1``)
+        is the authoritative representation — it is what the Termbases tab
+        displays and what matching ranks by. Promoting also:
+
+        * ensures an active activation row exists (a project termbase must be
+          readable to match, so ticking Project implies ticking Read), and
+        * keeps the legacy ``termbases.is_project_termbase`` flag consistent
+          for project-scoped termbases, so external readers of the shared
+          database (e.g. Supervertaler for Trados) never see a phantom
+          project termbase. Global termbases promoted per-project keep the
+          flag at 0 — a single flag column cannot represent a per-project
+          role (the same termbase can be the Project glossary of many
+          projects).
+
         Args:
             termbase_id: Termbase ID
             project_id: Project ID
@@ -638,6 +661,12 @@ class TermbaseManager:
             is_project = (priority == 1)
 
             if is_project:
+                # A project termbase must be readable: create/re-enable the
+                # activation row before assigning the role (no-op if already
+                # active).
+                if not self.activate_termbase(termbase_id, project_id):
+                    return False
+
                 # Exclusive: clear project glossary flag from all other termbases in this project
                 cursor.execute("""
                     UPDATE termbase_activation
@@ -656,6 +685,24 @@ class TermbaseManager:
             if cursor.rowcount == 0:
                 self.log(f"⚠️ No activation record found for termbase {termbase_id}, project {project_id}")
                 return False
+
+            # Legacy-flag hygiene (project-scoped termbases only — see
+            # docstring). On promote: this termbase carries the flag, no
+            # other termbase of the project does. On demote: it loses it.
+            if is_project:
+                cursor.execute("""
+                    UPDATE termbases SET is_project_termbase = 0
+                    WHERE project_id = ? AND id != ? AND is_project_termbase = 1
+                """, (project_id, termbase_id))
+                cursor.execute("""
+                    UPDATE termbases SET is_project_termbase = 1
+                    WHERE id = ? AND project_id = ?
+                """, (termbase_id, project_id))
+            else:
+                cursor.execute("""
+                    UPDATE termbases SET is_project_termbase = 0
+                    WHERE id = ? AND project_id = ?
+                """, (termbase_id, project_id))
 
             self.db_manager.connection.commit()
             label = "Project termbase" if is_project else "Background"
@@ -683,30 +730,12 @@ class TermbaseManager:
         """
         Set a termbase as the project termbase for a project.
         Only one project termbase allowed per project - this will unset any existing one.
+
+        v1.10.360: thin alias for the single write path — activates the
+        termbase and sets ``termbase_activation.priority = 1`` (and keeps the
+        legacy flag in sync). Kept for API compatibility.
         """
-        try:
-            cursor = self.db_manager.cursor
-            
-            # First, unset any existing project termbase for this project
-            cursor.execute("""
-                UPDATE termbases 
-                SET is_project_termbase = 0 
-                WHERE project_id = ? AND is_project_termbase = 1
-            """, (project_id,))
-            
-            # Then set the new one
-            cursor.execute("""
-                UPDATE termbases 
-                SET is_project_termbase = 1 
-                WHERE id = ?
-            """, (termbase_id,))
-            
-            self.db_manager.connection.commit()
-            self.log(f"✓ Set termbase {termbase_id} as project termbase for project {project_id}")
-            return True
-        except Exception as e:
-            self.log(f"✗ Error setting project termbase: {e}")
-            return False
+        return self.set_termbase_priority(termbase_id, project_id, 1)
     
     def get_active_termbase_ids(self, project_id: int) -> List[int]:
         """
@@ -740,14 +769,15 @@ class TermbaseManager:
         try:
             cursor = self.db_manager.cursor
             
-            # Get all activated termbases for this project (excluding project termbases)
+            # Get all activated termbases for this project (excluding the
+            # project termbase, i.e. the priority=1 activation row).
             # Order by activation timestamp so first activated gets #1, second gets #2, etc.
             cursor.execute("""
                 SELECT t.id
                 FROM termbases t
                 INNER JOIN termbase_activation ta ON t.id = ta.termbase_id
                 WHERE ta.project_id = ? AND ta.is_active = 1
-                AND (t.is_project_termbase = 0 OR t.is_project_termbase IS NULL)
+                AND COALESCE(ta.priority, 0) != 1
                 ORDER BY ta.activated_date ASC
             """, (project_id,))
             
@@ -778,16 +808,28 @@ class TermbaseManager:
             self.log(f"✗ Error reassigning rankings: {e}")
     
     def unset_project_termbase(self, termbase_id: int) -> bool:
-        """Remove project termbase designation from a termbase"""
+        """Remove project termbase designation from a termbase.
+
+        v1.10.360: clears BOTH representations — every
+        ``termbase_activation.priority = 1`` row this termbase holds (in any
+        project) and the legacy ``is_project_termbase`` flag — so the two can
+        never disagree afterwards.
+        """
         try:
             cursor = self.db_manager.cursor
-            
+
             cursor.execute("""
-                UPDATE termbases 
-                SET is_project_termbase = 0 
+                UPDATE termbase_activation
+                SET priority = NULL
+                WHERE termbase_id = ? AND priority = 1
+            """, (termbase_id,))
+
+            cursor.execute("""
+                UPDATE termbases
+                SET is_project_termbase = 0
                 WHERE id = ?
             """, (termbase_id,))
-            
+
             self.db_manager.connection.commit()
             self.log(f"✓ Removed project termbase designation from termbase {termbase_id}")
             return True
@@ -796,22 +838,34 @@ class TermbaseManager:
             return False
     
     def get_project_termbase(self, project_id: int) -> Optional[Dict]:
-        """Get the project termbase for a specific project"""
+        """Get the project termbase for a specific project.
+
+        v1.10.360: activation-based — the project termbase is the termbase
+        with ``termbase_activation.priority = 1`` (and ``is_active = 1``) for
+        this project, exactly what the Termbases tab shows as the pink
+        Project tick. The legacy ``is_project_termbase`` flag is no longer
+        consulted: it used to drift out of sync (a startup migration flagged
+        every project-scoped termbase), making this method report a project
+        termbase the UI said didn't exist. Note the project termbase may be
+        a global termbase promoted for this project, so there is no
+        ``t.project_id`` filter.
+        """
         try:
             cursor = self.db_manager.cursor
-            
+
             cursor.execute("""
-                SELECT 
+                SELECT
                     t.id, t.name, t.source_lang, t.target_lang, t.project_id,
-                    t.description, t.is_global, t.priority, t.is_project_termbase,
+                    t.description, t.is_global,
                     t.created_date, t.modified_date,
                     COUNT(gt.id) as term_count
                 FROM termbases t
-                LEFT JOIN termbase_terms gt ON CAST(t.id AS TEXT) = gt.termbase_id
-                WHERE t.project_id = ? AND t.is_project_termbase = 1
+                INNER JOIN termbase_activation ta ON ta.termbase_id = t.id
+                    AND ta.project_id = ? AND ta.priority = 1 AND ta.is_active = 1
+                LEFT JOIN termbase_terms gt ON CAST(gt.termbase_id AS INTEGER) = t.id
                 GROUP BY t.id
             """, (project_id,))
-            
+
             row = cursor.fetchone()
             if row:
                 return {
@@ -822,11 +876,11 @@ class TermbaseManager:
                     'project_id': row[4],
                     'description': row[5],
                     'is_global': row[6],
-                    'priority': row[7] or 50,
-                    'is_project_termbase': bool(row[8]),
-                    'created_date': row[9],
-                    'modified_date': row[10],
-                    'term_count': row[11] or 0
+                    'priority': 1,
+                    'is_project_termbase': True,
+                    'created_date': row[7],
+                    'modified_date': row[8],
+                    'term_count': row[9] or 0
                 }
             return None
         except Exception as e:

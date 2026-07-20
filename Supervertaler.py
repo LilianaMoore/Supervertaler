@@ -21059,98 +21059,73 @@ class SupervertalerQt(QMainWindow):
                 write_checkbox.toggled.connect(on_write_toggle)
                 termbase_table.setCellWidget(row, 5, write_checkbox)
                 
-                # Project glossary checkbox (only for readable termbases)
-                if is_readable and refresh_project_id:
+                # Project glossary checkbox. v1.10.360: always rendered when
+                # a project is open — previously it only existed for termbases
+                # with Read ticked, and the dash shown instead read as a
+                # rendering glitch. Ticking it on a non-Read termbase also
+                # enables Read (set_termbase_priority auto-activates: a
+                # project termbase must be readable to match).
+                if refresh_project_id:
                     is_project_glossary = (priority == 1)
                     project_checkbox = PinkCheckmarkCheckBox()
                     project_checkbox.setChecked(is_project_glossary)
-                    project_checkbox.setToolTip(self.tr("Set as Project Termbase (highest priority, pink)"))
+                    if is_readable:
+                        project_checkbox.setToolTip(self.tr("Set as Project Termbase (highest priority, pink)"))
+                    else:
+                        project_checkbox.setToolTip(self.tr("Set as Project Termbase (highest priority, pink). "
+                                                            "Ticking also enables Read – a project termbase is "
+                                                            "always used for matching."))
 
                     def on_project_toggle(checked, tb_id=tb['id']):
                         # v1.10.181: do NOT capture row_idx as a closure
-                        # parameter. The Termbases table has sorting enabled
-                        # (setSortingEnabled(True) on line 16701) — as soon
-                        # as the user clicks a column header, the visual row
-                        # order changes but the captured row_idx still points
-                        # at the position the row was at when the cell was
-                        # created. Result: the handler set the *wrong* row to
-                        # checked, then hit `elif checked: setChecked(False)`
-                        # for every OTHER row (including the actually-clicked
-                        # one), so the clicked checkbox was immediately reset
-                        # to unchecked. The user reported clicking the Project
-                        # box over and over with no visible change despite
-                        # the DB log line confirming success each time.
-                        #
-                        # Fix: look up the current row index dynamically by
-                        # tb_id (stored in column 1's UserRole at line 17481).
+                        # parameter — with column sorting enabled the captured
+                        # index goes stale; look rows up dynamically by tb_id
+                        # (stored in column 1's UserRole) instead.
                         curr_proj = self.current_project if hasattr(self, 'current_project') else None
                         curr_proj_id = curr_proj.id if (curr_proj and hasattr(curr_proj, 'id')) else None
+
+                        success = False
                         if not curr_proj_id:
                             self.log(f"⚠️ No project loaded, cannot change project termbase")
-                            return
+                        else:
+                            new_priority = 1 if checked else None
+                            # Single write path: promotes exclusively, ensures
+                            # an active activation row (Read), and keeps the
+                            # legacy is_project_termbase flag in sync.
+                            success = termbase_mgr.set_termbase_priority(tb_id, curr_proj_id, new_priority)
 
-                        new_priority = 1 if checked else None
-                        success = termbase_mgr.set_termbase_priority(tb_id, curr_proj_id, new_priority)
                         if not success:
+                            # Revert the tick visually (dynamic row lookup)
+                            for r in range(termbase_table.rowCount()):
+                                name_item = termbase_table.item(r, 1)
+                                if name_item and name_item.data(Qt.ItemDataRole.UserRole) == tb_id:
+                                    sender = termbase_table.cellWidget(r, 6)
+                                    if isinstance(sender, PinkCheckmarkCheckBox):
+                                        sender.blockSignals(True)
+                                        sender.setChecked(not checked)
+                                        sender.blockSignals(False)
+                                    break
                             return
 
                         label = "Project termbase" if checked else "Background"
                         self.log(f"✅ Set termbase {tb_id} as {label}")
 
-                        # Find the clicked row's CURRENT visual position by
-                        # scanning column 1 for the matching tb_id. -1 means
-                        # the row isn't in the table any more (e.g. it was
-                        # filtered out by a search) — the exclusive uncheck
-                        # of other rows still happens, just no row matches
-                        # 'this is the project row'.
-                        target_row = -1
-                        for r in range(termbase_table.rowCount()):
-                            name_item = termbase_table.item(r, 1)
-                            if name_item and name_item.data(Qt.ItemDataRole.UserRole) == tb_id:
-                                target_row = r
-                                break
-
-                        # Update all rows: tick target, untick others.
-                        for r in range(termbase_table.rowCount()):
-                            type_widget = termbase_table.cellWidget(r, 0)
-                            proj_widget = termbase_table.cellWidget(r, 6)
-                            name_item = termbase_table.item(r, 1)
-                            if not isinstance(proj_widget, PinkCheckmarkCheckBox):
-                                continue
-
-                            proj_widget.blockSignals(True)
-                            if r == target_row:
-                                proj_widget.setChecked(checked)
-                            elif checked:
-                                # Exclusive: uncheck all other rows
-                                proj_widget.setChecked(False)
-                            is_proj = proj_widget.isChecked()
-                            proj_widget.blockSignals(False)
-
-                            # Update Type column styling
-                            if type_widget is not None:
-                                if is_proj:
-                                    type_widget.setText(self.tr("📌 Project"))
-                                    type_widget.setStyleSheet("color: #FF69B4; font-weight: bold;")
-                                    if name_item:
-                                        name_item.setForeground(QColor("#FF69B4"))
-                                else:
-                                    type_widget.setText(self.tr("Background"))
-                                    type_widget.setStyleSheet("color: #666;")
-                                    if name_item:
-                                        name_item.setForeground(QColor("#000"))
-
-                        # Clear cache for termbase matching
+                        # Promotion may also have ticked Read, and the Type
+                        # column / row styling changed — rebuild the matching
+                        # index and refresh the whole table (same pattern as
+                        # on_read_toggle) rather than patching widgets by hand.
                         with self.termbase_cache_lock:
                             self.termbase_cache.clear()
+                        self._build_termbase_index()
+                        refresh_termbase_list()
 
                     project_checkbox.toggled.connect(on_project_toggle)
                     termbase_table.setCellWidget(row, 6, project_checkbox)
                 else:
-                    # Non-readable termbase: show dash
+                    # No project open: nothing to scope the role to
                     priority_item = QTableWidgetItem("–")
                     priority_item.setForeground(QColor("#999"))
-                    priority_item.setToolTip(self.tr("Not active – enable Read first"))
+                    priority_item.setToolTip(self.tr("Open a project to set a project termbase"))
                     priority_item.setFlags(priority_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     termbase_table.setItem(row, 6, priority_item)
 
@@ -21831,15 +21806,10 @@ class SupervertalerQt(QMainWindow):
                 return
 
             if make_project_tb:
-                # Two parallel "project termbase" representations exist and
-                # BOTH must be set or the Termbases tab won't reflect the
-                # promotion: the legacy is_project_termbase flag on the
-                # termbases row (what create/get_project_termbase check), and
-                # the activation-based one the tab actually displays – an
-                # activation record (Read) plus priority=1 (pink Project ✓).
+                # v1.10.360: single write path — activates the termbase
+                # (Read), sets priority=1 (pink Project ✓) exclusively, and
+                # keeps the legacy is_project_termbase flag in sync.
                 termbase_mgr.set_as_project_termbase(tb_id, project_id)
-                termbase_mgr.activate_termbase(tb_id, project_id)
-                termbase_mgr.set_termbase_priority(tb_id, project_id, 1)
 
             # Add term pairs (target may be empty where the AI was unsure)
             added = 0
@@ -33785,13 +33755,19 @@ class SupervertalerQt(QMainWindow):
         # so legacy databases without those columns (or with NULLs)
         # come back as empty strings rather than blowing up the
         # SELECT or feeding ``None`` downstream.
+        # v1.10.360: the project-termbase role is activation-based only —
+        # ``ta.priority = 1`` (what the Termbases tab shows as the pink
+        # Project tick). The legacy ``tb.is_project_termbase`` flag is no
+        # longer consulted: a stale flag used to resurrect termbases with
+        # Read unticked into the index and paint them pink.
         query = """
             SELECT
                 t.id, t.source_term, t.target_term, t.termbase_id,
                 t.domain, t.notes, t.project, t.client, t.forbidden,
-                tb.is_project_termbase, tb.name as termbase_name,
+                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as is_project_termbase,
+                tb.name as termbase_name,
                 tb.source_lang as tb_source_lang, tb.target_lang as tb_target_lang,
-                CASE WHEN COALESCE(ta.priority, 0) = 1 OR tb.is_project_termbase = 1 THEN 1 ELSE 0 END as ranking,
+                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as ranking,
                 COALESCE(t.is_nontranslatable, 0) as is_nontranslatable,
                 COALESCE(t.definition, '') as definition,
                 COALESCE(t.url, '') as url,
@@ -33801,7 +33777,7 @@ class SupervertalerQt(QMainWindow):
             LEFT JOIN termbases tb ON CAST(t.termbase_id AS INTEGER) = tb.id
             LEFT JOIN termbase_activation ta ON ta.termbase_id = tb.id
                 AND ta.project_id = ? AND ta.is_active = 1
-            WHERE (ta.is_active = 1 OR tb.is_project_termbase = 1)
+            WHERE ta.is_active = 1
         """
 
         # v1.10.73 (Tier 2): bulk-load every term's synonyms in ONE
@@ -34318,14 +34294,15 @@ class SupervertalerQt(QMainWindow):
                             SELECT
                                 t.id, t.source_term, t.target_term, t.termbase_id,
                                 t.domain, t.notes, t.project, t.client, t.forbidden,
-                                tb.is_project_termbase, tb.name as termbase_name,
-                                CASE WHEN COALESCE(ta.priority, 0) = 1 OR tb.is_project_termbase = 1 THEN 1 ELSE 0 END as ranking,
+                                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as is_project_termbase,
+                                tb.name as termbase_name,
+                                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as ranking,
                                 'source' as match_direction
                             FROM termbase_terms t
                             LEFT JOIN termbases tb ON CAST(t.termbase_id AS INTEGER) = tb.id
                             LEFT JOIN termbase_activation ta ON ta.termbase_id = tb.id AND ta.project_id = ? AND ta.is_active = 1
                             WHERE LOWER(t.source_term) LIKE ?
-                            AND (ta.is_active = 1 OR tb.is_project_termbase = 1)
+                            AND ta.is_active = 1
                     """
                     params = [project_id if project_id else 0, f"%{clean_word.lower()}%"]
 
@@ -34345,14 +34322,15 @@ class SupervertalerQt(QMainWindow):
                                 t.id, t.target_term as source_term, t.source_term as target_term,
                                 t.termbase_id,
                                 t.domain, t.notes, t.project, t.client, t.forbidden,
-                                tb.is_project_termbase, tb.name as termbase_name,
-                                CASE WHEN COALESCE(ta.priority, 0) = 1 OR tb.is_project_termbase = 1 THEN 1 ELSE 0 END as ranking,
+                                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as is_project_termbase,
+                                tb.name as termbase_name,
+                                CASE WHEN COALESCE(ta.priority, 0) = 1 THEN 1 ELSE 0 END as ranking,
                                 'target' as match_direction
                             FROM termbase_terms t
                             LEFT JOIN termbases tb ON CAST(t.termbase_id AS INTEGER) = tb.id
                             LEFT JOIN termbase_activation ta ON ta.termbase_id = tb.id AND ta.project_id = ? AND ta.is_active = 1
                             WHERE LOWER(t.target_term) LIKE ?
-                            AND (ta.is_active = 1 OR tb.is_project_termbase = 1)
+                            AND ta.is_active = 1
                     """
                     params.extend([project_id if project_id else 0, f"%{clean_word.lower()}%"])
 

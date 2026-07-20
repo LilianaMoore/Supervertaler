@@ -2,7 +2,21 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.359 (July 20, 2026)
+**Current Version:** v1.10.360 (July 20, 2026)
+
+
+## v1.10.360 – July 20, 2026
+
+### Fixed (One definition of "project termbase" – the two internal representations are unified)
+
+- **The app can no longer disagree with itself about which termbase is the project termbase.** Internally there were two parallel representations: a legacy flag on the termbase itself, and the activation-based one the Termbases tab displays (Read + pink Project tick). They drifted apart silently – most visibly, a startup migration marked *every* project-specific termbase with the legacy flag, so AI term extraction could refuse to create a project termbase "because one already exists" while the Termbases tab showed none. The pink Project tick (`termbase_activation.priority = 1`) is now the single authoritative definition everywhere: creation guards, term extraction, matching, ranking and the entry editor all read it, and every way of assigning or removing the role goes through one manager method (`set_termbase_priority`) that keeps everything consistent, including the legacy flag for external readers of the shared database (e.g. Supervertaler for Trados).
+- **Stale legacy flags are repaired at startup.** Any termbase flagged as project termbase without a matching pink Project tick has the flag cleared (the startup migration that planted those flags is gone). So a "test2"-style ghost stops blocking term extraction the next time you start the app.
+- **Termbases with Read unticked no longer sneak into matching via the stale flag.** Previously a flagged termbase was treated as "always active by definition" even with Read off – it matched, ranked first and displayed pink while the Termbases tab said it wasn't in use at all.
+- **New regression tests** lock in the unified behaviour: exclusive promotion, auto-activation, guard semantics, flag hygiene and the startup repair (`tests/test_project_termbase_role.py`).
+
+### Changed (Termbases tab: the Project column no longer shows a dash for inactive termbases)
+
+- **The pink Project checkbox is now shown for every termbase whenever a project is open.** Previously termbases without Read ticked showed only a dash in the Project column, which looked like a rendering glitch. Ticking Project on such a termbase now also ticks Read automatically – a project termbase must be readable to match – and the tooltip says so. With no project open, the dash remains but now explains that a project is needed.
 
 
 ## v1.10.359 – July 20, 2026

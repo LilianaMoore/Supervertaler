@@ -1133,12 +1133,14 @@ class TermbaseEntryEditor(QDialog):
             surface_match = "(" + " OR ".join(conds) + ")"
 
             if project_id is not None:
-                # v1.10.79 activation filter:
+                # v1.10.79 activation filter (v1.10.360: the legacy
+                # ``tb.is_project_termbase = 1`` escape hatch is gone —
+                # the project termbase always has an active activation
+                # row now, and a stale flag used to resurrect inactive
+                # termbases into the dropdown):
                 #
                 #   - The termbase must be active for this project
-                #     (``ta.is_active = 1``), OR be the project's
-                #     "project termbase" (always active by definition,
-                #     ``tb.is_project_termbase = 1``), OR be the
+                #     (``ta.is_active = 1``), OR be the
                 #     loaded entry's own termbase (defensive — covers
                 #     the case where the dialog was opened on an
                 #     inactive entry via the Termbases tab editor,
@@ -1164,7 +1166,6 @@ class TermbaseEntryEditor(QDialog):
                         AND ta.project_id = ?
                     WHERE {surface_match}
                       AND (ta.is_active = 1
-                           OR tb.is_project_termbase = 1
                            OR t.id = ?)
                     ORDER BY tb.name, t.id
                 """

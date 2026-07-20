@@ -504,8 +504,12 @@ def check_and_migrate(db_manager) -> bool:
         print("✅ Database schema is current - checking UUIDs...")
         generate_missing_uuids(db_manager)
 
-        # Fix project termbase flags if needed
-        fix_project_termbase_flags(db_manager)
+        # v1.10.360: the fix_project_termbase_flags() call that used to run
+        # here is gone — it flagged every project-scoped termbase as "the
+        # project termbase", desynchronising the legacy is_project_termbase
+        # flag from the authoritative termbase_activation.priority = 1
+        # representation. Stale flags are now repaired (cleared) at startup
+        # by DatabaseManager's schema-init data repair instead.
 
         return True
         
@@ -952,54 +956,11 @@ def generate_missing_uuids(db_manager) -> bool:
         return False
 
 
-def fix_project_termbase_flags(db_manager) -> int:
-    """
-    Fix is_project_termbase flags for termbases that have project_id but is_project_termbase=0.
-    This is a data repair function that should be called manually or in migrations.
-
-    Args:
-        db_manager: DatabaseManager instance
-
-    Returns:
-        Number of termbases fixed
-    """
-    try:
-        cursor = db_manager.cursor
-
-        # Find termbases with project_id but is_project_termbase=0
-        cursor.execute("""
-            SELECT id, name, project_id
-            FROM termbases
-            WHERE project_id IS NOT NULL
-            AND (is_project_termbase IS NULL OR is_project_termbase = 0)
-        """)
-        termbases_to_fix = cursor.fetchall()
-
-        if not termbases_to_fix:
-            print("✅ All project termbases are correctly flagged")
-            return 0
-
-        print(f"📊 Found {len(termbases_to_fix)} termbase(s) that need is_project_termbase flag fix:")
-        for tb_id, tb_name, project_id in termbases_to_fix:
-            print(f"  - ID {tb_id}: '{tb_name}' (project_id={project_id})")
-
-        # Fix the flags
-        cursor.execute("""
-            UPDATE termbases
-            SET is_project_termbase = 1
-            WHERE project_id IS NOT NULL
-            AND (is_project_termbase IS NULL OR is_project_termbase = 0)
-        """)
-
-        updated_count = cursor.rowcount
-        db_manager.connection.commit()
-
-        print(f"✅ Fixed is_project_termbase flag for {updated_count} termbase(s)")
-
-        return updated_count
-
-    except Exception as e:
-        print(f"❌ Failed to fix project termbase flags: {e}")
-        import traceback
-        traceback.print_exc()
-        return 0
+# v1.10.360: fix_project_termbase_flags() was removed. It set
+# is_project_termbase = 1 on every termbase with a project_id, conflating
+# "project-scoped" with "the project termbase" and desynchronising the legacy
+# flag from the authoritative representation
+# (termbase_activation.priority = 1). The inverse repair — clearing flags
+# with no backing priority=1 activation row — now runs in
+# DatabaseManager._create_tables(), and TermbaseManager.set_termbase_priority
+# is the single write path that keeps the flag consistent.

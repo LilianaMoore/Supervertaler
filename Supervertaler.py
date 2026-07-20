@@ -20114,11 +20114,11 @@ class SupervertalerQt(QMainWindow):
             lambda pos: self._show_termbase_context_menu(pos, termbase_table, termbase_mgr, refresh_termbase_list)
         )
         
-        # Get current project
-        current_project = self.current_project if hasattr(self, 'current_project') else None
-        # current_project is a Project object, not a dict
-        project_id = current_project.id if (current_project and hasattr(current_project, 'id')) else None
-        
+        # NOTE: do NOT capture the current project here. This tab is built once
+        # at startup, before any project is open, so anything derived from it
+        # would be permanently None. Every consumer resolves the project live
+        # instead (see refresh_termbase_list and the button handlers below).
+
         # Filter function for search box
         def filter_termbase_table(search_text):
             """Filter termbase table rows by name"""
@@ -21227,7 +21227,14 @@ class SupervertalerQt(QMainWindow):
         button_layout = QHBoxLayout()
         
         create_btn = QPushButton(self.tr("+ Create New"))
-        create_btn.clicked.connect(lambda: self._show_create_termbase_dialog(termbase_mgr, refresh_termbase_list, project_id))
+        # Same stale-capture trap as Extract Terms below: resolve the project on
+        # click, otherwise a "Project-specific" termbase would be created with a
+        # NULL project_id and behave like an orphaned global one.
+        create_btn.clicked.connect(lambda: self._show_create_termbase_dialog(
+            termbase_mgr,
+            refresh_termbase_list,
+            getattr(getattr(self, 'current_project', None), 'id', None)
+        ))
         button_layout.addWidget(create_btn)
         
         extract_btn = QPushButton(self.tr("🔍 Extract Terms"))
@@ -21305,7 +21312,12 @@ class SupervertalerQt(QMainWindow):
         global_checkbox = BlueCheckmarkCheckBox("Global (all projects)")
         global_checkbox.setChecked(True)
         project_checkbox = PinkCheckmarkCheckBox("Project-specific")
-        
+        if project_id is None:
+            # Nothing to scope the termbase to - offering the choice would only
+            # produce a termbase with no project association.
+            project_checkbox.setEnabled(False)
+            project_checkbox.setToolTip(self.tr("Open a project first to create a project-specific termbase"))
+
         scope_group.addButton(global_checkbox, 0)
         scope_group.addButton(project_checkbox, 1)
         
@@ -21330,8 +21342,14 @@ class SupervertalerQt(QMainWindow):
             description = desc_field.toPlainText().strip()
             is_global = scope_group.checkedId() == 0
             
+            if not is_global and project_id is None:
+                QMessageBox.warning(dialog, "Error",
+                                    "No project is open, so a project-specific termbase cannot be created.\n\n"
+                                    "Open a project first, or choose 'Global (all projects)'.")
+                return
+
             tb_project_id = None if is_global else project_id
-            
+
             tb_id = termbase_mgr.create_termbase(
                 name=name,
                 source_lang=source_lang,

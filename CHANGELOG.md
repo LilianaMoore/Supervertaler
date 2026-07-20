@@ -2,7 +2,16 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.353 (July 20, 2026)
+**Current Version:** v1.10.354 (July 20, 2026)
+
+
+## v1.10.354 – July 20, 2026
+
+### Fixed (Termbases: "+ Create New" ignored the "Project-specific" scope)
+
+- **A project-specific termbase is now genuinely tied to your project.** Choosing **Project-specific** in the **+ Create New** dialogue on the Termbases tab produced a termbase with no project attached, leaving it effectively orphaned: it would not show up as your project's termbase, and the scope you picked was silently discarded. This was the same stale-value problem behind the two previous fixes – the Termbases tab is built once during start-up, before any project exists, and the project id handed to the create dialogue was captured at that moment and never refreshed. The dialogue now resolves the current project at the moment you click the button.
+- **Global termbases are unaffected** – they were always created without a project by design, which is correct.
+- **The "Project-specific" option is greyed out when no project is open**, with a tooltip saying so, rather than quietly creating an unattached termbase. If it is somehow reached without a project, creation now stops with a clear explanation instead of proceeding.
 
 
 ## v1.10.353 – July 20, 2026

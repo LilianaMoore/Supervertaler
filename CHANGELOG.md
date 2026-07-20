@@ -2,7 +2,18 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.356 (July 20, 2026)
+**Current Version:** v1.10.357 (July 20, 2026)
+
+
+## v1.10.357 – July 20, 2026
+
+### Changed (Term extraction is now AI-based and bilingual)
+
+- **🔍 Extract Terms now asks your configured AI model for a project glossary** instead of running the old mechanical frequency analysis. The model reads your source text and returns source→target term pairs – actual translations, not just a list of source words with empty targets. The dialogue's frequency/n-gram parameters are gone; in their place are the language pair (prefilled from the project) and an optional **Domain / Subject** hint (leave it blank and the model infers the domain).
+- **Review before committing**: extracted pairs land in an editable table – fix a source or target in place, untick rows you don't want, then **Create Project Termbase** saves exactly what you see. Pairs where the model was unsure of a translation arrive with an empty target and an explanatory note rather than a guess.
+- **The created termbase is bilingual**, so its terms start producing TermLens matches immediately – previously every extracted entry had an empty target and matched nothing.
+- The AI call runs in the background (the dialogue no longer freezes), uses the same provider/model/keys as translation, and reports failures – including the model's raw reply when it returns something unparseable – instead of failing silently. On very large projects only the first ~48k characters are analysed, with a visible warning rather than silent truncation.
+- The mechanical extractor (`modules/term_extractor.py`) and its guide document have been removed. Anyone preferring fully-local extraction can point the AI provider at a local model (Ollama).
 
 
 ## v1.10.356 – July 20, 2026

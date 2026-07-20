@@ -8831,6 +8831,86 @@ class _ImportProgressDialog:
 
 
 # ============================================================================
+# AI GLOSSARY EXTRACTION WORKER
+# ============================================================================
+
+class GlossaryExtractionWorker(QThread):
+    """Run an LLM glossary-extraction call off the UI thread.
+
+    Replaces the old mechanical TermExtractor (retired v1.10.357): sends the
+    project's source text to the configured LLM and returns bilingual
+    source→target term pairs. Emits finished_ok(list_of_dicts) or
+    failed(message, raw_response).
+    """
+
+    finished_ok = pyqtSignal(list)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, client, prompt: str):
+        super().__init__()
+        self.client = client
+        self.prompt = prompt
+
+    def run(self):
+        try:
+            raw = self.client.translate(
+                text="",  # unused: custom_prompt replaces the whole prompt
+                custom_prompt=self.prompt,
+                skip_cleaning=True,  # response is JSON, not a translation
+            )
+            pairs = self._parse_pairs(raw)
+            if not pairs:
+                self.failed.emit("The AI returned no usable term pairs.", raw or "")
+                return
+            self.finished_ok.emit(pairs)
+        except Exception as e:
+            self.failed.emit(str(e), "")
+
+    @staticmethod
+    def _parse_pairs(raw: str) -> list:
+        """Extract [{'source':…, 'target':…, 'note':…}] from the response.
+
+        Tolerates markdown fences and prose around the JSON array — models
+        often add both no matter how firmly the prompt forbids them.
+        """
+        import json
+        import re as _re
+
+        if not raw:
+            return []
+        text = raw.strip()
+        # Strip ```json … ``` fences if present
+        fence = _re.search(r'```(?:json)?\s*(.*?)```', text, _re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        # Fall back to the outermost [...] span
+        if not text.startswith('['):
+            start, end = text.find('['), text.rfind(']')
+            if start == -1 or end <= start:
+                return []
+            text = text[start:end + 1]
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(data, list):
+            return []
+        pairs = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get('source', '') or '').strip()
+            if not source:
+                continue
+            pairs.append({
+                'source': source,
+                'target': str(item.get('target', '') or '').strip(),
+                'note': str(item.get('note', '') or '').strip(),
+            })
+        return pairs
+
+
+# ============================================================================
 # MAIN WINDOW
 # ============================================================================
 
@@ -21379,8 +21459,9 @@ class SupervertalerQt(QMainWindow):
         dialog.exec()
     
     def _show_term_extraction_dialog(self, termbase_mgr, refresh_callback, project_id):
-        """Show dialog to extract terms from project segments"""
-        from modules.term_extractor import TermExtractor
+        """AI glossary extraction: send project source text to the configured
+        LLM and review the returned bilingual term pairs before creating a
+        project termbase. Replaced the mechanical TermExtractor in v1.10.357."""
 
         if project_id is None:
             QMessageBox.information(
@@ -21392,14 +21473,14 @@ class SupervertalerQt(QMainWindow):
             return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(self.tr("Extract Terms from Project"))
+        dialog.setWindowTitle(self.tr("Extract Terms with AI"))
         dialog.setMinimumWidth(800)
         dialog.setMinimumHeight(600)
-        
+
         layout = QVBoxLayout()
-        
+
         # Info label
-        info_label = QLabel(self.tr("Extract terminology from project source segments to create a project termbase."))
+        info_label = QLabel(self.tr("The configured AI model reads your source text and proposes a bilingual project glossary. Review and edit the pairs, then create the project termbase."))
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
         
@@ -21434,63 +21515,67 @@ class SupervertalerQt(QMainWindow):
         source_group.setLayout(source_layout)
         layout.addWidget(source_group)
         
-        # Extraction parameters
-        params_group = QGroupBox(self.tr("Extraction Parameters"))
+        # Extraction settings
+        params_group = QGroupBox(self.tr("Extraction Settings"))
         params_layout = QFormLayout()
-        
-        # Source language
-        lang_combo = QComboBox()
-        lang_combo.addItems(["en", "nl", "de", "fr", "es"])
-        params_layout.addRow("Source Language:", lang_combo)
-        
-        # Min frequency
-        freq_spin = QSpinBox()
-        freq_spin.setMinimum(1)
-        freq_spin.setMaximum(20)
-        freq_spin.setValue(2)
-        params_layout.addRow("Min Frequency:", freq_spin)
-        
-        # Max n-gram
-        ngram_spin = QSpinBox()
-        ngram_spin.setMinimum(1)
-        ngram_spin.setMaximum(5)
-        ngram_spin.setValue(3)
-        params_layout.addRow("Max N-gram:", ngram_spin)
-        
-        # Max terms
-        max_terms_spin = QSpinBox()
-        max_terms_spin.setMinimum(10)
-        max_terms_spin.setMaximum(1000)
-        max_terms_spin.setValue(100)
-        params_layout.addRow("Max Terms:", max_terms_spin)
-        
+
+        # Language pair, prefilled from the project (editable free text so any
+        # language code or name works – the LLM is not limited to a fixed list)
+        source_lang_edit = QLineEdit(getattr(self.current_project, 'source_lang', None) or 'en')
+        source_lang_edit.setMaximumWidth(120)
+        params_layout.addRow(self.tr("Source Language:"), source_lang_edit)
+
+        target_lang_edit = QLineEdit(getattr(self.current_project, 'target_lang', None) or 'nl')
+        target_lang_edit.setMaximumWidth(120)
+        params_layout.addRow(self.tr("Target Language:"), target_lang_edit)
+
+        # Optional domain hint; blank = let the model infer
+        domain_edit = QLineEdit()
+        domain_edit.setPlaceholderText(self.tr("Optional – e.g. 'mechanical engineering'. Leave blank to let the AI infer."))
+        params_layout.addRow(self.tr("Domain / Subject:"), domain_edit)
+
         params_group.setLayout(params_layout)
         layout.addWidget(params_group)
-        
-        # Extract button
-        extract_btn = QPushButton(self.tr("🔍 Extract Terms"))
-        extract_btn.setMaximumWidth(150)
-        
-        # Results table
+
+        # Extract button + busy indicator
+        extract_row = QHBoxLayout()
+        extract_btn = QPushButton(self.tr("🤖 Extract Terms with AI"))
+        extract_btn.setMaximumWidth(200)
+        busy_label = QLabel(self.tr("Asking the AI model… this takes a few seconds."))
+        busy_label.setVisible(False)
+        extract_row.addWidget(extract_btn)
+        extract_row.addWidget(busy_label)
+        extract_row.addStretch()
+        layout.addLayout(extract_row)
+
+        # Results table: bilingual, editable in place
         results_table = QTableWidget()
         results_table.setColumnCount(4)
-        results_table.setHorizontalHeaderLabels(["Select", "Term", "Frequency", "Score"])
+        results_table.setHorizontalHeaderLabels([
+            self.tr("Select"), self.tr("Source"), self.tr("Target"), self.tr("Note")])
         results_table.horizontalHeader().setStretchLastSection(False)
         results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         results_table.setVisible(False)
-        
+
         results_label = QLabel(self.tr("Extracted terms will appear here"))
         results_label.setVisible(False)
-        
-        layout.addWidget(extract_btn)
+
         layout.addWidget(results_label)
         layout.addWidget(results_table)
-        
+
         extracted_terms = []
+        # Keep a reference so the worker is not garbage-collected mid-flight
+        worker_holder = {'worker': None}
+
+        # Cap the text sent in one call. ~48k chars ≈ 12k tokens of source
+        # text – roughly a 8–9k-word project. Larger projects get a visible
+        # warning that only the first part was analysed (chunk-and-dedup is a
+        # planned follow-up, not silently pretending full coverage).
+        MAX_CHARS = 48_000
         
         def _do_extract_terms():
             """Extract terms and populate results table"""
@@ -21526,58 +21611,95 @@ class SupervertalerQt(QMainWindow):
                     QMessageBox.warning(dialog, "Error", "Please enter some text to analyze")
                     return
             
-            # Extract terms
-            try:
-                extractor = TermExtractor(
-                    source_lang=lang_combo.currentText(),
-                    min_frequency=freq_spin.value(),
-                    max_ngram=ngram_spin.value()
-                )
-                
-                terms = extractor.extract_terms(source_text)
-                
-                # Limit to max terms
-                terms = terms[:max_terms_spin.value()]
-                
-                if not terms:
-                    QMessageBox.information(dialog, "No Terms", "No terms were extracted with the current parameters. Try lowering the minimum frequency.")
-                    return
-                
-                # Store for later use
+            # Cap oversized projects with a visible warning – never silently
+            truncated = False
+            if len(source_text) > MAX_CHARS:
+                source_text = source_text[:MAX_CHARS]
+                truncated = True
+
+            # Build the configured LLM client
+            settings = self.load_llm_settings()
+            provider = settings.get('provider', 'openai')
+            model = settings.get(f"{provider}_model")
+            api_keys = self.load_api_keys()
+            client = self.create_llm_client(provider, model, api_keys, settings=settings)
+
+            source_lang = source_lang_edit.text().strip() or 'en'
+            target_lang = target_lang_edit.text().strip() or 'nl'
+            domain = domain_edit.text().strip()
+            domain_line = (
+                f"The text's domain is: {domain}.\n"
+                if domain else
+                "Infer the domain from the text itself.\n"
+            )
+
+            prompt = (
+                "You are a terminology extractor for professional translators.\n"
+                f"From the {source_lang} text below, identify the domain-specific terms, "
+                "technical vocabulary, proper nouns, and recurring multi-word terms worth "
+                "capturing in a project glossary. Ignore ordinary/common words and function phrases.\n"
+                f"{domain_line}"
+                "For each term give its canonical (dictionary/lemma) form in "
+                f"{source_lang} and the best {target_lang} translation for this domain. "
+                "If you are not confident of a translation, leave \"target\" empty and "
+                "explain briefly in \"note\".\n\n"
+                "Return ONLY a JSON array, no prose, no markdown fences. Each element: "
+                '{"source": "...", "target": "...", "note": "..."} '
+                "(\"note\" is optional context such as a domain label or a caveat).\n\n"
+                f"TEXT:\n{source_text}"
+            )
+
+            def on_extraction_ok(pairs):
+                try:
+                    busy_label.setVisible(False)
+                except RuntimeError:
+                    return  # dialog was closed while the AI call was running
+                extract_btn.setEnabled(True)
+
                 nonlocal extracted_terms
-                extracted_terms = terms
-                
-                # Populate table
-                results_table.setRowCount(len(terms))
-                for i, term in enumerate(terms):
-                    # Checkbox
+                extracted_terms = pairs
+
+                results_table.setRowCount(len(pairs))
+                for i, pair in enumerate(pairs):
                     check_item = QTableWidgetItem()
                     check_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
                     check_item.setCheckState(Qt.CheckState.Checked)
                     results_table.setItem(i, 0, check_item)
-                    
-                    # Term
-                    results_table.setItem(i, 1, QTableWidgetItem(term['term']))
-                    
-                    # Frequency
-                    freq_item = QTableWidgetItem(str(term['frequency']))
-                    freq_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    results_table.setItem(i, 2, freq_item)
-                    
-                    # Score
-                    score_item = QTableWidgetItem(f"{term['score']:.2f}")
-                    score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    results_table.setItem(i, 3, score_item)
-                
+                    # Source and Target stay editable so pairs can be fixed
+                    # in place before committing them to the termbase.
+                    results_table.setItem(i, 1, QTableWidgetItem(pair['source']))
+                    results_table.setItem(i, 2, QTableWidgetItem(pair['target']))
+                    note_item = QTableWidgetItem(pair['note'])
+                    note_item.setFlags(note_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    results_table.setItem(i, 3, note_item)
+
                 results_table.setVisible(True)
-                results_label.setText(f"Extracted {len(terms)} terms (select terms to add):")
+                label = self.tr("Extracted {0} term pairs (edit cells to correct, untick to skip):").format(len(pairs))
+                if truncated:
+                    label += self.tr(" ⚠️ Project is large – only the first ~{0}k characters were analysed.").format(MAX_CHARS // 1000)
+                results_label.setText(label)
                 results_label.setVisible(True)
-                
-                self.log(f"✓ Extracted {len(terms)} terms from project")
-                
-            except Exception as e:
-                QMessageBox.critical(dialog, "Error", f"Failed to extract terms: {str(e)}")
-                self.log(f"✗ Term extraction failed: {e}")
+                self.log(f"✓ AI extracted {len(pairs)} term pairs from project")
+
+            def on_extraction_failed(message, raw):
+                try:
+                    busy_label.setVisible(False)
+                except RuntimeError:
+                    return  # dialog was closed while the AI call was running
+                extract_btn.setEnabled(True)
+                detail = f"\n\nRaw response (first 1000 chars):\n{raw[:1000]}" if raw else ""
+                QMessageBox.critical(dialog, self.tr("Extraction Failed"),
+                                     self.tr("AI term extraction failed: {0}{1}").format(message, detail))
+                self.log(f"✗ AI term extraction failed: {message}")
+
+            worker = GlossaryExtractionWorker(client, prompt)
+            worker.finished_ok.connect(on_extraction_ok)
+            worker.failed.connect(on_extraction_failed)
+            worker_holder['worker'] = worker
+
+            extract_btn.setEnabled(False)
+            busy_label.setVisible(True)
+            worker.start()
 
         def extract_terms():
             """Guarded entry point for the Extract Terms button.
@@ -21610,13 +21732,19 @@ class SupervertalerQt(QMainWindow):
                 QMessageBox.warning(dialog, "Error", "Please extract terms first")
                 return
             
-            # Get selected terms
+            # Get selected pairs — read Source/Target from the table cells, not
+            # the original extraction, so in-place edits are respected.
             selected = []
             for i in range(results_table.rowCount()):
                 check_item = results_table.item(i, 0)
                 if check_item and check_item.checkState() == Qt.CheckState.Checked:
-                    selected.append(extracted_terms[i])
-            
+                    src_item = results_table.item(i, 1)
+                    tgt_item = results_table.item(i, 2)
+                    src = src_item.text().strip() if src_item else ""
+                    tgt = tgt_item.text().strip() if tgt_item else ""
+                    if src:
+                        selected.append({'source': src, 'target': tgt})
+
             if not selected:
                 QMessageBox.warning(dialog, "Error", "Please select at least one term")
                 return
@@ -21636,30 +21764,30 @@ class SupervertalerQt(QMainWindow):
             if not ok or not name.strip():
                 return
             
-            # Create termbase
-            source_lang = lang_combo.currentText()
+            # Create termbase (bilingual – targets come from the AI extraction)
+            source_lang = source_lang_edit.text().strip() or 'en'
+            target_lang = target_lang_edit.text().strip() or None
             tb_id = termbase_mgr.create_termbase(
                 name=name.strip(),
                 source_lang=source_lang,
-                target_lang=None,  # Source-only termbase
+                target_lang=target_lang,
                 project_id=project_id,
-                description=f"Extracted terminology from project segments ({len(selected)} terms)",
+                description=f"AI-extracted glossary from project segments ({len(selected)} term pairs)",
                 is_global=False,
                 is_project_termbase=True
             )
-            
+
             if not tb_id:
                 QMessageBox.critical(dialog, "Error", "Failed to create termbase. There may already be a project termbase for this project.")
                 return
-            
-            # Add terms (source only, target = empty string)
+
+            # Add term pairs (target may be empty where the AI was unsure)
             added = 0
-            for term in selected:
+            for pair in selected:
                 success = termbase_mgr.add_term(
                     termbase_id=tb_id,
-                    source_term=term['term'],
-                    target_term="",  # Empty target for source-only
-                    priority=50
+                    source_term=pair['source'],
+                    target_term=pair['target']
                 )
                 if success:
                     added += 1

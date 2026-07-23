@@ -344,7 +344,8 @@ class LLMClient:
             "claude-sonnet-5",
             "claude-sonnet-4-6",
             "claude-haiku-4-5-20251001",
-            "claude-opus-4-8"
+            "claude-opus-4-8",
+            "claude-fable-5"
         ],
         "gemini": [
             "gemini-3.1-flash-lite",
@@ -356,6 +357,14 @@ class LLMClient:
 
     # Available Claude models with descriptions
     CLAUDE_MODELS = {
+        "claude-fable-5": {
+            "name": "Claude Fable 5",
+            "description": "Anthropic's most capable model - deepest reasoning, always-on thinking, double Opus pricing",
+            "released": "2026-06-09",
+            "strengths": ["Hardest translation problems", "Whole-document review", "Deepest reasoning", "1M context"],
+            "pricing": {"input": 10, "output": 50},  # USD per million tokens
+            "use_case": "For the hardest jobs only - always-on thinking adds billed reasoning tokens per call, so overkill for routine segment translation"
+        },
         "claude-opus-4-8": {
             "name": "Claude Opus 4.8",
             "description": "Most capable - Anthropic's flagship, 1M context, 128k max output",

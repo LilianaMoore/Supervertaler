@@ -2,8 +2,14 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.361 (July 20, 2026)
+**Current Version:** v1.10.362 (July 23, 2026)
 
+
+## v1.10.362 – July 23, 2026
+
+### Removed (Concordance Search · the dead "🧠 Supermemory" tab is gone)
+
+- **The Concordance Search dialog no longer shows a permanently empty "🧠 Supermemory" tab.** The Supermemory semantic-TM feature was removed back in v1.9.105, but its tab survived in the Concordance dialog, forever displaying "Supermemory not available – go to Resources → Supermemory" – a menu that no longer exists. The tab, its no-op search plumbing and the last dead code paths behind it (stub `search_supermemory()`, orphaned lazy importer, stale `pip install supervertaler[supermemory]` references in CONTRIBUTING and the docstrings) have all been removed. Note this is unrelated to **SuperMemory memory banks** in Supervertaler for Trados, which are a different, current feature.
 
 ## v1.10.361 – July 20, 2026
 

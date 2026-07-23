@@ -13,7 +13,6 @@ Each feature module has:
 
 Installation examples:
     pip install supervertaler                    # Recommended core install
-    pip install supervertaler[supermemory]       # Optional: Supermemory semantic search (heavy)
     pip install supervertaler[local-whisper]     # Optional: Local Whisper (offline, heavy)
     pip install supervertaler[all]               # Legacy alias (no-op; kept for compatibility)
 """
@@ -140,11 +139,11 @@ class FeatureManager:
     
     Usage:
         fm = FeatureManager(user_data_path)
-        
+
         # Check if a feature can be used
-        if fm.is_feature_usable("supermemory"):
-            from modules.supermemory import SupermemoryEngine
-            
+        if fm.is_feature_usable("local-whisper"):
+            backend = lazy_import_whisper()
+
         # Get all features for Settings UI
         for feature in fm.get_all_features():
             print(f"{feature.name}: {'✅' if fm.is_feature_usable(feature.id) else '❌'}")
@@ -253,15 +252,6 @@ class FeatureManager:
 
 
 # Lazy import helpers - use these instead of direct imports
-def lazy_import_supermemory():
-    """Lazily import Supermemory module."""
-    try:
-        from modules.supermemory import SupermemoryEngine
-        return SupermemoryEngine
-    except ImportError:
-        return None
-
-
 def lazy_import_whisper():
     """Lazily import the faster-whisper backend for voice commands."""
     try:

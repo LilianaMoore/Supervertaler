@@ -123,12 +123,11 @@ All optional features (larger install):
 pip install -e ".[all]"
 ```
 
-If you’re working on a specific area (e.g., MT providers, WebEngine, Supermemory), you can install only the relevant extra:
+If you’re working on a specific area (e.g., MT providers, WebEngine), you can install only the relevant extra:
 
 ```bash
 pip install -e ".[mt]"
 pip install -e ".[web]"
-pip install -e ".[supermemory]"
 ```
 
 ### Running the app

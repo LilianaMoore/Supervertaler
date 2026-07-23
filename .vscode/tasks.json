@@ -66,34 +66,6 @@
 			"group": "build"
 		},
 		{
-			"label": "Smoke test supermemory optional deps",
-			"type": "shell",
-			"command": "powershell",
-			"args": [
-				"-NoLogo",
-				"-NoProfile",
-				"-Command",
-				"$ErrorActionPreference='Stop'; Set-Location 'C:\\Dev\\Supervertaler'; $whl=(Get-ChildItem .\\dist\\supervertaler-*.whl | Sort-Object LastWriteTime | Select-Object -Last 1).FullName; Write-Host ('Wheel: ' + $whl); $root='C:\\Dev\\Supervertaler\\_smoketest_task'; if (Test-Path $root) { Remove-Item -Recurse -Force $root }; New-Item -ItemType Directory -Path $root | Out-Null; $base='C:\\Dev\\Supervertaler\\.venv\\Scripts\\python.exe'; & $base -m venv \"$root\\core\"; & \"$root\\core\\Scripts\\python.exe\" -m pip install -q -U pip; & \"$root\\core\\Scripts\\pip.exe\" install -q $whl; & \"$root\\core\\Scripts\\python.exe\" -c \"import importlib.util as u; mods=['torch','sentence_transformers','chromadb','tokenizers']; print('CORE install module presence:'); [print(f'{m}:', bool(u.find_spec(m))) for m in mods]\"; & $base -m venv \"$root\\supermemory\"; & \"$root\\supermemory\\Scripts\\python.exe\" -m pip install -q -U pip; & \"$root\\supermemory\\Scripts\\pip.exe\" install -q ($whl+'[supermemory]'); & \"$root\\supermemory\\Scripts\\python.exe\" -c \"import importlib.util as u; mods=['torch','sentence_transformers','chromadb','tokenizers']; print('EXTRA install module presence:'); [print(f'{m}:', bool(u.find_spec(m))) for m in mods]\";"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
-			"label": "Smoke test supermemory optional deps (logged)",
-			"type": "shell",
-			"command": "powershell",
-			"args": [
-				"-NoLogo",
-				"-NoProfile",
-				"-Command",
-				"$ErrorActionPreference='Stop'; Set-Location 'C:\\Dev\\Supervertaler'; $whl=(Get-ChildItem .\\dist\\supervertaler-*.whl | Sort-Object LastWriteTime | Select-Object -Last 1).FullName; $root='C:\\Dev\\Supervertaler\\_smoketest_task'; if (Test-Path $root) { Remove-Item -Recurse -Force $root }; New-Item -ItemType Directory -Path $root | Out-Null; $log=Join-Path $root 'out.txt'; function Log($s){ $s | Tee-Object -FilePath $log -Append | Out-Host }; Log ('Wheel: ' + $whl); $base='C:\\Dev\\Supervertaler\\.venv\\Scripts\\python.exe'; Log '--- CORE ---'; & $base -m venv \"$root\\core\" 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; & \"$root\\core\\Scripts\\python.exe\" -m pip install -q -U pip 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; & \"$root\\core\\Scripts\\pip.exe\" install -q \"$whl\" 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; & \"$root\\core\\Scripts\\python.exe\" -c \"import importlib.util as u; mods=['torch','sentence_transformers','chromadb','tokenizers']; print('CORE install module presence:'); [print(f'{m}:', bool(u.find_spec(m))) for m in mods]\" 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; Log '--- EXTRA [supermemory] ---'; & $base -m venv \"$root\\supermemory\" 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; & \"$root\\supermemory\\Scripts\\python.exe\" -m pip install -q -U pip 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; $req = \"$whl[supermemory]\"; Log ('Installing: ' + $req); & \"$root\\supermemory\\Scripts\\pip.exe\" install -q \"$req\" 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; & \"$root\\supermemory\\Scripts\\python.exe\" -c \"import importlib.util as u; mods=['torch','sentence_transformers','chromadb','tokenizers']; print('EXTRA install module presence:'); [print(f'{m}:', bool(u.find_spec(m))) for m in mods]\" 2>&1 | Tee-Object -FilePath $log -Append | Out-Host; Log 'DONE';"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
 			"label": "Smoke test Windows EXE (full)",
 			"type": "shell",
 			"command": "powershell",

@@ -361,7 +361,7 @@ class ConcordanceSearchDialog(QDialog):
         super().closeEvent(event)
     
     def setup_ui(self):
-        """Setup the UI with TM and Supermemory tabs"""
+        """Setup the UI with the TM concordance view"""
         layout = QVBoxLayout()
         layout.setContentsMargins(15, 15, 15, 15)
         
@@ -374,7 +374,7 @@ class ConcordanceSearchDialog(QDialog):
         layout.addWidget(header)
         
         # Description
-        desc = QLabel("Search across translation memories (exact match) and Supermemory (semantic/meaning-based)")
+        desc = QLabel("Search across translation memories for exact and partial matches")
         desc.setStyleSheet("color: #666; margin-bottom: 10px;")
         layout.addWidget(desc)
         
@@ -394,34 +394,22 @@ class ConcordanceSearchDialog(QDialog):
         
         layout.addLayout(search_layout)
         
-        # Tab widget for TM vs Supermemory
+        # Tab widget for result views
         self.view_tabs = QTabWidget()
-        
-        # Tab 1: TM Concordance (exact/fuzzy text matching)
+
+        # TM Concordance (exact/fuzzy text matching)
         self.tm_tab = QWidget()
         tm_layout = QVBoxLayout(self.tm_tab)
         tm_layout.setContentsMargins(0, 10, 0, 0)
-        
+
         self.search_results = QTextEdit()
         self.search_results.setReadOnly(True)
         self.search_results.setFont(QFont("Segoe UI", 10))
         self.search_results.setStyleSheet("background-color: #fafafa; border: 1px solid #ddd; border-radius: 4px;")
         tm_layout.addWidget(self.search_results)
-        
-        # Tab 2: Supermemory (semantic search)
-        self.supermemory_tab = QWidget()
-        supermemory_layout = QVBoxLayout(self.supermemory_tab)
-        supermemory_layout.setContentsMargins(0, 10, 0, 0)
-        
-        self.supermemory_results = QTextEdit()
-        self.supermemory_results.setReadOnly(True)
-        self.supermemory_results.setFont(QFont("Segoe UI", 10))
-        self.supermemory_results.setStyleSheet("background-color: #f8f5ff; border: 1px solid #d0c4e8; border-radius: 4px;")
-        supermemory_layout.addWidget(self.supermemory_results)
-        
-        # Add tabs with result counts (will be updated after search)
+
+        # Tab title carries the result count (updated after search)
         self.view_tabs.addTab(self.tm_tab, "📋 TM Matches")
-        self.view_tabs.addTab(self.supermemory_tab, "🧠 Supermemory")
         
         layout.addWidget(self.view_tabs)
         
@@ -444,29 +432,20 @@ class ConcordanceSearchDialog(QDialog):
         
         # Focus on search input
         self.search_input.setFocus()
-        
-        # Check if Supermemory is available
-        # The engine is stored in supermemory_widget.engine
-        self.supermemory = None
-        if hasattr(self.parent_app, 'supermemory_widget') and self.parent_app.supermemory_widget:
-            if hasattr(self.parent_app.supermemory_widget, 'engine'):
-                self.supermemory = self.parent_app.supermemory_widget.engine
-    
+
     def do_search(self):
-        """Perform both TM concordance and Supermemory semantic search"""
+        """Perform the TM concordance search"""
         search_text = self.search_input.text().strip()
         if not search_text:
             self.status_label.setText("⚠️ Please enter a search term")
             return
-        
+
         self.status_label.setText("🔍 Searching...")
         self.search_results.clear()
-        self.supermemory_results.clear()
         self.current_search_term = search_text
-        
+
         tm_count = 0
-        supermemory_count = 0
-        
+
         # Search TM (concordance)
         try:
             results = self.db_manager.concordance_search(search_text)
@@ -484,52 +463,14 @@ class ConcordanceSearchDialog(QDialog):
         except Exception as e:
             self.search_results.setHtml(f"<p style='color: red; padding: 20px;'>TM Search Error: {str(e)}</p>")
             self.log(f"TM Concordance search error: {e}")
-        
-        # Search Supermemory (semantic)
-        try:
-            if self.supermemory and self.supermemory.is_initialized():
-                # Get only active TM IDs for filtering
-                active_tm_ids = self.supermemory.get_active_tm_ids()
-                
-                # Search with active TM filter
-                semantic_results = self.supermemory.search(
-                    search_text, 
-                    n_results=25,
-                    tm_ids=active_tm_ids if active_tm_ids else None  # None = search all
-                )
-                self.current_semantic_results = semantic_results if semantic_results else []
-                supermemory_count = len(self.current_semantic_results)
-                
-                if not semantic_results:
-                    self.supermemory_results.setHtml(
-                        f"<p style='color: #666; padding: 20px; text-align: center;'>"
-                        f"No semantic matches found for '<b>{search_text}</b>'</p>"
-                    )
-                else:
-                    self.update_supermemory_view()
-            else:
-                self.current_semantic_results = []
-                self.supermemory_results.setHtml(
-                    "<p style='color: #888; padding: 20px; text-align: center;'>"
-                    "<b>🧠 Supermemory not available</b><br><br>"
-                    "Supermemory provides semantic search (find by meaning, not just text).<br><br>"
-                    "To enable: Go to <b>Resources → Supermemory</b> and index your TMX files."
-                    "</p>"
-                )
-                
-        except Exception as e:
-            self.supermemory_results.setHtml(f"<p style='color: red; padding: 20px;'>Supermemory Error: {str(e)}</p>")
-            self.log(f"Supermemory search error: {e}")
-        
-        # Update tab titles with counts
+
+        # Update tab title with count
         self.view_tabs.setTabText(0, f"📋 TM Matches ({tm_count})")
-        self.view_tabs.setTabText(1, f"🧠 Supermemory ({supermemory_count})")
-        
+
         # Update status
-        total = tm_count + supermemory_count
-        if total > 0:
-            self.status_label.setText(f"✓ Found {tm_count} TM + {supermemory_count} semantic matches")
-            self.log(f"Concordance: Found {tm_count} TM + {supermemory_count} semantic matches for '{search_text}'")
+        if tm_count > 0:
+            self.status_label.setText(f"✓ Found {tm_count} TM matches")
+            self.log(f"Concordance: Found {tm_count} TM matches for '{search_text}'")
         else:
             self.status_label.setText("No matches found")
     
@@ -574,68 +515,6 @@ class ConcordanceSearchDialog(QDialog):
             """
         
         self.search_results.setHtml(html)
-    
-    def update_supermemory_view(self):
-        """Update the Supermemory semantic search view"""
-        if not hasattr(self, 'current_semantic_results') or not self.current_semantic_results:
-            return
-        
-        search_text = self.current_search_term
-        results = self.current_semantic_results
-        
-        # Format results with similarity scores
-        html = f"""<h3 style='color: #5e35b1; margin-bottom: 15px;'>
-            Found {len(results)} semantic matches for '<span style='color: #7c4dff;'>{search_text}</span>'
-        </h3>
-        <p style='color: #666; font-size: 11px; margin-bottom: 15px;'>
-            Semantic search finds translations with similar <i>meaning</i>, even if the exact words differ.
-        </p>"""
-        
-        for result in results:
-            entry = result.entry
-            similarity = result.similarity
-            rank = result.rank
-            
-            source = entry.source
-            target = entry.target
-            tm_name = entry.tm_name
-            domain = entry.domain or "General"
-            
-            # Color-coded similarity
-            if similarity >= 0.8:
-                sim_color = '#2e7d32'  # Green - high
-                sim_label = 'High'
-            elif similarity >= 0.6:
-                sim_color = '#f57c00'  # Orange - medium
-                sim_label = 'Medium'
-            else:
-                sim_color = '#757575'  # Gray - low
-                sim_label = 'Low'
-            
-            # Alternating background colors with purple tint
-            bg_color = '#f3e5f5' if rank % 2 == 0 else '#ffffff'
-            
-            html += f"""
-            <div style='background-color: {bg_color}; padding: 10px 8px; margin: 0;'>
-                <div style='color: #555; font-size: 11px; margin-bottom: 6px;'>
-                    #{rank} - 
-                    <span style='color: {sim_color}; font-weight: bold;'>
-                        {similarity:.0%} {sim_label}
-                    </span>
-                    - TM: <b>{tm_name}</b>
-                    - Domain: <span style='color: #7c4dff;'>{domain}</span>
-                </div>
-                <div style='margin-bottom: 4px;'>
-                    <b style='color: #5e35b1;'>{self.source_lang_name}:</b> {source}
-                </div>
-                <div>
-                    <b style='color: #00897b;'>{self.target_lang_name}:</b> {target}
-                </div>
-            </div>
-            <hr style='border: none; border-top: 2px solid #9575cd; margin: 0;'>
-            """
-        
-        self.supermemory_results.setHtml(html)
     
     def _highlight_term(self, text: str, search_term: str) -> str:
         """Highlight search term in text with yellow/orange background"""

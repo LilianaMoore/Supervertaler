@@ -66964,15 +66964,6 @@ class SuperlookupTab(QWidget):
         
         return tab
     
-    def search_supermemory(self, query: str):
-        """Search Supermemory for semantic matches. Returns count of results.
-        
-        NOTE: Supermemory was removed in v1.9.105. This method now returns 0
-        to maintain backward compatibility with existing code.
-        """
-        # Supermemory functionality removed - return 0 to indicate no results
-        return 0
-    
     def create_mt_results_tab(self):
         """Create the MT results tab with provider status and results"""
         tab = QWidget()
@@ -69205,12 +69196,10 @@ class SuperlookupTab(QWidget):
         self._active_search_worker = worker
         QThreadPool.globalInstance().start(worker)
 
-        # MT and supermemory still run synchronously on the main thread:
-        # _perform_mt_lookup early-outs in the Sidekick context (no
-        # mt_results_table) and is parallelised via ThreadPoolExecutor
-        # otherwise, so it doesn't block significantly. Supermemory is a no-op
-        # currently. Both are cheap compared to TM/termbase SQL.
-        self._search_in_flight_supermemory = self.search_supermemory(text) or 0
+        # MT still runs synchronously on the main thread: _perform_mt_lookup
+        # early-outs in the Sidekick context (no mt_results_table) and is
+        # parallelised via ThreadPoolExecutor otherwise, so it doesn't block
+        # significantly. Cheap compared to TM/termbase SQL.
         try:
             mt_results = self._perform_mt_lookup(text, from_lang, to_lang)
             self.display_mt_results(mt_results)
@@ -69279,17 +69268,14 @@ class SuperlookupTab(QWidget):
         """Slot: worker done – update the status line with final counts."""
         tm_count = len(getattr(self, '_search_in_flight_tm', []) or [])
         tb_count = len(getattr(self, '_search_in_flight_termbase', []) or [])
-        sm_count = getattr(self, '_search_in_flight_supermemory', 0) or 0
 
         parts = []
         if tm_count:
             parts.append(f"TM: {tm_count}")
         if tb_count:
             parts.append(f"Termbase: {tb_count}")
-        if sm_count:
-            parts.append(f"Supermemory: {sm_count}")
 
-        total = tm_count + tb_count + sm_count
+        total = tm_count + tb_count
         if parts:
             self.status_label.setText(f"✓ Found {total} results ({', '.join(parts)})")
         else:
@@ -69327,7 +69313,7 @@ class SuperlookupTab(QWidget):
         if hasattr(self, 'results_tabs'):
             self.results_tabs.setCurrentIndex(0)  # TM Matches is first tab
         
-        # Perform the lookup (TM, Termbase, Supermemory, MT)
+        # Perform the lookup (TM, Termbase, MT)
         self.perform_lookup()
         
         # Pre-load all web resources in embedded mode

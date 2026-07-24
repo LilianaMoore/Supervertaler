@@ -2,8 +2,14 @@
 
 All notable changes to Supervertaler Workbench are documented in this file.
 
-**Current Version:** v1.10.363 (July 23, 2026)
+**Current Version:** v1.10.364 (July 24, 2026)
 
+
+## v1.10.364 – July 24, 2026
+
+### Added (AI providers · Claude Opus 5)
+
+- **Claude Opus 5 is now selectable as a Claude model.** Released 24 July 2026, it is Anthropic’s new flagship Opus: near-Fable-5 intelligence at **half the price** – $5/$25 per million tokens, the same as Opus 4.8 and half of Fable 5’s $10/$50 – and, unlike Fable 5, no always-on-thinking cost. It’s the top choice for hard legal/technical translation and long-context jobs. **Claude Sonnet 5 stays the recommended default** for routine work. Opus 4.8 and Fable 5 remain selectable but are largely superseded by Opus 5. The shared pricing list covers Opus 5, so cost estimates work out of the box.
 
 ## v1.10.363 – July 23, 2026
 

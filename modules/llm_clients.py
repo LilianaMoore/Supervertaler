@@ -7,7 +7,7 @@ Can be used standalone or imported by other applications.
 
 Supported Providers:
 - OpenAI (GPT-5.5, GPT-5.4 Mini)
-- Anthropic (Claude Sonnet 4.6, Haiku 4.5, Opus 4.8)
+- Anthropic (Claude Sonnet 5, Haiku 4.5, Opus 5, Fable 5)
 - Google (Gemini 3.1 Flash-Lite, 2.5 Pro, 3.1 Pro Preview, Gemma 4 26B MoE)
 - Mistral AI (Mistral Large, Mistral Small)
 - DeepSeek (V4 Pro, V4 Flash)
@@ -160,7 +160,7 @@ class LLMClient:
         "deepseek": "deepseek-v4-pro",  # DeepSeek V4 Pro (flagship)
         "ollama": "translategemma:12b",  # Local LLM via Ollama - purpose-built translation model
         "custom_openai": "custom-model",  # Custom OpenAI-compatible endpoint
-        "openrouter": "anthropic/claude-sonnet-4.6"  # OpenRouter gateway (200+ models)
+        "openrouter": "anthropic/claude-sonnet-5"  # OpenRouter gateway (200+ models)
     }
 
     # Available Mistral models with descriptions
@@ -198,23 +198,17 @@ class LLMClient:
     # Available OpenRouter models (curated selection)
     # OpenRouter is an API gateway – users can also type any model ID from openrouter.ai/models
     OPENROUTER_MODELS = {
-        "anthropic/claude-sonnet-4.6": {
-            "name": "Claude Sonnet 4.6",
-            "description": "Anthropic flagship – fast, high quality",
+        "anthropic/claude-sonnet-5": {
+            "name": "Claude Sonnet 5",
+            "description": "Anthropic flagship Sonnet – near-Opus quality, fast",
             "strengths": ["General translation", "Multilingual", "Fast"],
             "use_case": "Recommended for most translation tasks"
         },
-        "anthropic/claude-opus-4.8": {
-            "name": "Claude Opus 4.8",
-            "description": "Anthropic's most capable – 1M context, top-tier reasoning",
+        "anthropic/claude-opus-5": {
+            "name": "Claude Opus 5",
+            "description": "Anthropic's flagship Opus – 1M context, top-tier reasoning",
             "strengths": ["Legal translation", "Technical documents", "Complex reasoning", "1M context"],
             "use_case": "Specialised legal/technical translation, long-context jobs"
-        },
-        "anthropic/claude-opus-4.6": {
-            "name": "Claude Opus 4.6",
-            "description": "Previous Opus – still excellent for reasoning",
-            "strengths": ["Legal translation", "Technical documents", "Complex reasoning"],
-            "use_case": "Specialised legal/technical translation"
         },
         "openai/gpt-5.4": {
             "name": "GPT 5.4",
@@ -342,9 +336,8 @@ class LLMClient:
         ],
         "claude": [
             "claude-sonnet-5",
-            "claude-sonnet-4-6",
             "claude-haiku-4-5-20251001",
-            "claude-opus-4-8",
+            "claude-opus-5",
             "claude-fable-5"
         ],
         "gemini": [
@@ -365,13 +358,13 @@ class LLMClient:
             "pricing": {"input": 10, "output": 50},  # USD per million tokens
             "use_case": "For the hardest jobs only - always-on thinking adds billed reasoning tokens per call, so overkill for routine segment translation"
         },
-        "claude-opus-4-8": {
-            "name": "Claude Opus 4.8",
-            "description": "Most capable - Anthropic's flagship, 1M context, 128k max output",
-            "released": "2026-05-28",
+        "claude-opus-5": {
+            "name": "Claude Opus 5",
+            "description": "Anthropic's flagship Opus - near-Fable-5 intelligence at half the price ($5/$25), 1M context",
+            "released": "2026-07-24",
             "strengths": ["Legal translation", "Technical documents", "Complex reasoning", "Highest accuracy", "1M context"],
             "pricing": {"input": 5, "output": 25},  # USD per million tokens
-            "use_case": "Best for specialised legal/technical translation and long-context jobs"
+            "use_case": "Top choice for hard legal/technical translation and long-context jobs - near-Fable quality without Fable's price or always-on-thinking cost"
         },
         "claude-sonnet-5": {
             "name": "Claude Sonnet 5",
@@ -380,14 +373,6 @@ class LLMClient:
             "strengths": ["General translation", "Reasoning", "Tool use", "Knowledge work", "Cost-effective"],
             "pricing": {"input": 3, "output": 15},  # USD per million tokens (intro $2/$10 until 2026-08-31)
             "use_case": "Recommended for most translation tasks"
-        },
-        "claude-sonnet-4-6": {
-            "name": "Claude Sonnet 4.6",
-            "description": "Previous-generation balance of speed, quality, and cost",
-            "released": "2026-02-18",
-            "strengths": ["General translation", "Multilingual", "Fast", "Cost-effective"],
-            "pricing": {"input": 3, "output": 15},  # USD per million tokens
-            "use_case": "Previous generation - kept as a fallback"
         },
         "claude-haiku-4-5-20251001": {
             "name": "Claude Haiku 4.5",
@@ -420,7 +405,7 @@ class LLMClient:
                 print(f"{info['name']}: {info['description']}")
 
             # Get specific model
-            info = LLMClient.get_claude_model_info("claude-sonnet-4-6")
+            info = LLMClient.get_claude_model_info("claude-sonnet-5")
             print(info['use_case'])
         """
         if model_id:

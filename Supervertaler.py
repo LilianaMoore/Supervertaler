@@ -24055,19 +24055,18 @@ class SupervertalerQt(QMainWindow):
         
         claude_combo = QComboBox()
         claude_combo.addItems([
-            "claude-sonnet-5 (Recommended - Newest)",
-            "claude-sonnet-4-6 (Previous - Best Balance)",
+            "claude-sonnet-5 (Recommended)",
             "claude-haiku-4-5-20251001 (Fast & Affordable)",
-            "claude-opus-4-8 (Latest Premium - Most Capable)",
+            "claude-opus-5 (Premium - Highest Quality)",
             "claude-fable-5 (Maximum - Deepest Reasoning, 2x Opus Price)"
         ])
         claude_combo.setToolTip(
-            "Claude Sonnet 5: Newest Sonnet - near-Opus quality at Sonnet cost.\n"
-            "Claude Sonnet 4.6: Previous generation, kept as a fallback.\n"
+            "Claude Sonnet 5: Recommended - near-Opus quality at Sonnet cost.\n"
             "Claude Haiku 4.5: Fast and affordable for batch jobs.\n"
-            "Claude Opus 4.8: Anthropic's most capable Opus model (1M context, 128k max output).\n"
+            "Claude Opus 5: Anthropic's flagship Opus - highest quality for hard\n"
+            "  legal/technical work ($5/$25, 1M context).\n"
             "Claude Fable 5: Anthropic's most capable model overall - always-on reasoning,\n"
-            "  double Opus pricing; for the hardest jobs, overkill for routine translation."
+            "  double Opus pricing; rarely worth it now that Opus 5 exists."
         )
         current_claude_model = settings.get('claude_model', 'claude-sonnet-5')
         for i in range(claude_combo.count()):
@@ -24162,9 +24161,8 @@ class SupervertalerQt(QMainWindow):
         openrouter_combo = QComboBox()
         openrouter_combo.setEditable(True)
         openrouter_combo.addItems([
-            "anthropic/claude-sonnet-4.6 (Recommended)",
-            "anthropic/claude-opus-4.8 (Latest Premium)",
-            "anthropic/claude-opus-4.6 (Previous Premium)",
+            "anthropic/claude-sonnet-5 (Recommended)",
+            "anthropic/claude-opus-5 (Premium)",
             "openai/gpt-5.4 (Advanced Reasoning)",
             "openai/gpt-5.4-mini (Fast & Economical)",
             "google/gemini-3.1-pro-preview (Latest Gemini)",
@@ -24177,7 +24175,7 @@ class SupervertalerQt(QMainWindow):
             "Select a model from the dropdown or type any model ID from openrouter.ai/models.\n\n"
             "Pricing varies per model – see openrouter.ai for details."
         )
-        current_openrouter_model = settings.get('openrouter_model', 'anthropic/claude-sonnet-4.6')
+        current_openrouter_model = settings.get('openrouter_model', 'anthropic/claude-sonnet-5')
         # Try to select from dropdown, or set as typed text
         found = False
         for i in range(openrouter_combo.count()):
@@ -24391,7 +24389,7 @@ class SupervertalerQt(QMainWindow):
             model_id = combo_text.split()[0] if combo_text else ""
             friendly = {
                 "gpt-5.5": "GPT-5.5", "gpt-5.4-mini": "GPT-5.4 Mini",
-                "claude-sonnet-5": "Claude Sonnet 5", "claude-sonnet-4-6": "Claude Sonnet 4.6", "claude-opus-4-8": "Claude Opus 4.8", "claude-fable-5": "Claude Fable 5",
+                "claude-sonnet-5": "Claude Sonnet 5", "claude-opus-5": "Claude Opus 5", "claude-fable-5": "Claude Fable 5",
                 "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
                 "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite", "gemini-3.5-flash": "Gemini 3.5 Flash",
                 "gemini-2.5-pro": "Gemini 2.5 Pro",
@@ -25352,9 +25350,8 @@ class SupervertalerQt(QMainWindow):
         llm_providers = [
             ("claude", "Claude", "claude", [
                 ("claude-sonnet-5", "Claude Sonnet 5 (Recommended)"),
-                ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
                 ("claude-haiku-4-5-20251001", "Claude Haiku 4.5 (Fast)"),
-                ("claude-opus-4-8", "Claude Opus 4.8 (Latest Premium)"),
+                ("claude-opus-5", "Claude Opus 5 (Premium)"),
                 ("claude-fable-5", "Claude Fable 5 (Maximum)"),
             ]),
             ("openai", "OpenAI", "openai", [
@@ -25376,8 +25373,8 @@ class SupervertalerQt(QMainWindow):
                 ("deepseek-v4-flash", "DeepSeek V4 Flash (Fast)"),
             ]),
             ("openrouter", "OpenRouter (200+ models)", "openrouter", [
-                ("anthropic/claude-sonnet-4.6", "Claude Sonnet 4.6 (Recommended)"),
-                ("anthropic/claude-opus-4.8", "Claude Opus 4.8 (Latest Premium)"),
+                ("anthropic/claude-sonnet-5", "Claude Sonnet 5 (Recommended)"),
+                ("anthropic/claude-opus-5", "Claude Opus 5 (Premium)"),
                 ("openai/gpt-5.4", "GPT-5.4 (Advanced Reasoning)"),
                 ("openai/gpt-5.4-mini", "GPT-5.4 Mini (Fast & Economical)"),
                 ("google/gemini-3.1-pro-preview", "Gemini 3.1 Pro (Latest Gemini)"),
@@ -29271,7 +29268,7 @@ class SupervertalerQt(QMainWindow):
             'gemini_model': gemini_combo.currentText().split()[0],
             'mistral_model': mistral_combo.currentText().split()[0] if mistral_combo else 'mistral-large-latest',
             'deepseek_model': deepseek_combo.currentText().split()[0] if deepseek_combo else 'deepseek-v4-pro',
-            'openrouter_model': openrouter_combo.currentText().split()[0] if openrouter_combo else 'anthropic/claude-sonnet-4.6',
+            'openrouter_model': openrouter_combo.currentText().split()[0] if openrouter_combo else 'anthropic/claude-sonnet-5',
             'ollama_model': ollama_model,
             'custom_openai_model': active_model,
             'custom_openai_endpoint': active_endpoint,

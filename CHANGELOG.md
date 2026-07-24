@@ -7,9 +7,10 @@ All notable changes to Supervertaler Workbench are documented in this file.
 
 ## v1.10.364 – July 24, 2026
 
-### Added (AI providers · Claude Opus 5)
+### Changed (AI providers · Claude Opus 5 added, superseded models retired)
 
-- **Claude Opus 5 is now selectable as a Claude model.** Released 24 July 2026, it is Anthropic’s new flagship Opus: near-Fable-5 intelligence at **half the price** – $5/$25 per million tokens, the same as Opus 4.8 and half of Fable 5’s $10/$50 – and, unlike Fable 5, no always-on-thinking cost. It’s the top choice for hard legal/technical translation and long-context jobs. **Claude Sonnet 5 stays the recommended default** for routine work. Opus 4.8 and Fable 5 remain selectable but are largely superseded by Opus 5. The shared pricing list covers Opus 5, so cost estimates work out of the box.
+- **Claude Opus 5 is now selectable as a Claude model.** Released 24 July 2026, it is Anthropic’s new flagship Opus: near-Fable-5 intelligence at **half the price** – $5/$25 per million tokens, the same as Opus 4.8 and half of Fable 5’s $10/$50 – and, unlike Fable 5, no always-on-thinking cost. It’s the top choice for hard legal/technical translation and long-context jobs. **Claude Sonnet 5 stays the recommended default** for routine work. The shared pricing list covers Opus 5, so cost estimates work out of the box.
+- **Claude Opus 4.8 and Claude Sonnet 4.6 removed from the model pickers.** Both are superseded – Opus 5 costs the same as Opus 4.8 and is better, and Sonnet 5 supersedes Sonnet 4.6 – so keeping them only made the list harder to choose from. The Claude line-up is now one model per tier: **Sonnet 5** (recommended) · **Haiku 4.5** (fast/cheap) · **Opus 5** (premium) · **Fable 5** (maximum). The OpenRouter Anthropic routes were updated to match (Sonnet 5 / Opus 5). Their prices stay in the shared pricing list, so cost figures for existing projects and past usage logs still resolve. If you had one of the retired models selected, pick a current one in **Settings → AI Providers**.
 
 ## v1.10.363 – July 23, 2026
 

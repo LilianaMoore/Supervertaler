@@ -206,6 +206,27 @@
 
         <p>No translation content, file names, or personal information is included in license checks.</p>
 
+        <h3>Trial registration (Trados plugin v18/19.20.118 and later)</h3>
+
+        <p>If you are using the free 14-day trial (no licence key), the plugin registers the trial once
+            per session on startup with a first-party licence endpoint (a Cloudflare Worker operated by
+            Supervertaler). The only data sent is:</p>
+
+        <ul>
+            <li>The same anonymous machine identifier used for licence activation (a one-way hash &mdash;
+                it cannot be reversed to identify your computer)</li>
+            <li>Plugin version, Trados Studio version, and system locale</li>
+            <li>The trial's locally recorded start date and status</li>
+        </ul>
+
+        <p>This gives the trial's start date one reliable, authoritative record, so the trial behaves
+            consistently across reinstalls, data-folder moves, and clock changes. It is part of how the
+            trial functions &mdash; not analytics &mdash; so it is separate from the opt-in usage
+            statistics described below. The country code is derived from the network connection by
+            Cloudflare; no IP addresses are stored. Trial records are kept only while relevant to
+            licensing and are purged after a period of inactivity. If the endpoint cannot be reached
+            (no internet, firewall, air-gapped machine), the trial keeps working normally.</p>
+
         <h2>6. Optional anonymous usage statistics (Trados plugin only)</h2>
 
         <p><strong>Supervertaler for Trados</strong> offers an optional, strictly opt-in usage statistics feature.
